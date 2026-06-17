@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import enum
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+from sqlalchemy import DateTime, Enum, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base, TimestampMixin, UUIDMixin
+
+if TYPE_CHECKING:
+    from app.models.chunk import Chunk
+
+
+class DocumentStatus(enum.StrEnum):
+    pending = "pending"
+    processing = "processing"
+    indexed = "indexed"
+    failed = "failed"
+    archived = "archived"
+
+
+class DocumentType(enum.StrEnum):
+    pdf = "pdf"
+    docx = "docx"
+    txt = "txt"
+    confluence = "confluence"
+    slack = "slack"
+    google_drive = "google_drive"
+
+
+class Document(Base, UUIDMixin, TimestampMixin):
+    __tablename__ = "documents"
+
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    type: Mapped[DocumentType] = mapped_column(Enum(DocumentType), nullable=False)
+    status: Mapped[DocumentStatus] = mapped_column(
+        Enum(DocumentStatus), nullable=False, default=DocumentStatus.pending
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    storage_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    chunks: Mapped[list[Chunk]] = relationship(
+        "Chunk", back_populates="document", cascade="all, delete-orphan"
+    )
