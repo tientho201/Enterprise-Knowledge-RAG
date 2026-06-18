@@ -12,7 +12,8 @@ import {
   Zap,
   FileText,
   BookOpen,
-  History
+  History,
+  LogOut
 } from "lucide-react"
 import { useApp } from "@/lib/context"
 
@@ -28,7 +29,9 @@ export default function Sidebar() {
     showLeftSidebar, 
     setShowLeftSidebar,
     handleNewChat,
-    handleDeleteSession
+    handleDeleteSession,
+    user,
+    logout
   } = useApp()
 
   if (!showLeftSidebar) return null
@@ -147,6 +150,45 @@ export default function Sidebar() {
           )
         })}
       </div>
+
+      {/* User Profile Widget */}
+      {user && (
+        <div className="p-3 border-t border-white/[0.04] flex items-center justify-between gap-2.5 bg-white/[0.01]">
+          <div className="flex items-center gap-2 min-w-0">
+            {/* User Avatar */}
+            {user.avatarUrl ? (
+              <img
+                src={user.avatarUrl}
+                alt={user.name}
+                className="w-8 h-8 rounded-full border border-emerald-500/20 shrink-0 bg-gradient-to-br from-emerald-500/10 to-teal-500/10"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shrink-0 text-white font-bold text-[10px]">
+                {user.name.charAt(0).toUpperCase()}
+              </div>
+            )}
+
+            {/* User Details */}
+            <div className="min-w-0 flex-1">
+              <div className="text-[12px] font-semibold text-neutral-200 truncate leading-tight">
+                {user.name}
+              </div>
+              <div className="text-[10px] text-neutral-500 truncate leading-tight mt-0.5">
+                {user.email}
+              </div>
+            </div>
+          </div>
+
+          {/* Logout Button */}
+          <button
+            onClick={() => logout()}
+            className="p-1.5 rounded-lg hover:bg-white/[0.06] text-neutral-500 hover:text-red-400 transition-colors shrink-0 cursor-pointer"
+            title="Đăng xuất"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Status Footer */}
       <div className="p-4 border-t border-white/[0.04] space-y-2">

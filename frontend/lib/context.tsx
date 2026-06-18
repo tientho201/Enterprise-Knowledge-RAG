@@ -19,6 +19,13 @@ export interface Message {
   ragResponse?: RAGResponse;
 }
 
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl?: string;
+}
+
 export interface ChatSession {
   id: string;
   title: string;
@@ -98,6 +105,10 @@ interface AppContextType {
   showRagProcessId: string | null;
   setShowRagProcessId: React.Dispatch<React.SetStateAction<string | null>>;
   processFile: (file: File) => Promise<void>;
+  user: User | null;
+  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  register: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  logout: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined)
@@ -193,6 +204,103 @@ Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã h�
     stepText: string;
     isUploading: boolean;
   } | null>(null)
+
+  // --- Auth State & Operations ---
+  const [user, setUser] = useState<User | null>(null)
+
+  useEffect(() => {
+    // 1. Ensure mock users list exists in localStorage
+    const existingUsers = localStorage.getItem("rag_users")
+    if (!existingUsers) {
+      const demoUsers = [
+        {
+          id: "user-demo",
+          name: "Admin User",
+          email: "admin@enterprise.com",
+          password: "admin123"
+        }
+      ]
+      localStorage.setItem("rag_users", JSON.stringify(demoUsers))
+    }
+
+    // 2. Load current user
+    const currentUser = localStorage.getItem("current_rag_user")
+    if (currentUser) {
+      try {
+        setUser(JSON.parse(currentUser))
+      } catch (e) {
+        console.error("Failed to parse current user", e)
+      }
+    }
+  }, [])
+
+  const login = async (email: string, password: string) => {
+    const usersStr = localStorage.getItem("rag_users") || "[]"
+    let users = []
+    try {
+      users = JSON.parse(usersStr)
+    } catch (e) {
+      users = []
+    }
+
+    const matchedUser = users.find((u: any) => u.email.toLowerCase() === email.toLowerCase() && u.password === password)
+    if (matchedUser) {
+      const userInfo = {
+        id: matchedUser.id,
+        name: matchedUser.name,
+        email: matchedUser.email,
+        avatarUrl: matchedUser.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(matchedUser.name)}`
+      }
+      setUser(userInfo)
+      localStorage.setItem("current_rag_user", JSON.stringify(userInfo))
+      addAuditLog(`Người dùng ${matchedUser.name} đăng nhập thành công`, "config", `Email: ${email}`)
+      return { success: true }
+    } else {
+      return { success: false, error: "Email hoặc mật khẩu không chính xác!" }
+    }
+  }
+
+  const register = async (name: string, email: string, password: string) => {
+    const usersStr = localStorage.getItem("rag_users") || "[]"
+    let users = []
+    try {
+      users = JSON.parse(usersStr)
+    } catch (e) {
+      users = []
+    }
+
+    if (users.some((u: any) => u.email.toLowerCase() === email.toLowerCase())) {
+      return { success: false, error: "Email này đã được sử dụng!" }
+    }
+
+    const newUser = {
+      id: `user-${Date.now()}`,
+      name,
+      email,
+      password,
+      avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(name)}`
+    }
+
+    users.push(newUser)
+    localStorage.setItem("rag_users", JSON.stringify(users))
+
+    const userInfo = {
+      id: newUser.id,
+      name: newUser.name,
+      email: newUser.email,
+      avatarUrl: newUser.avatarUrl
+    }
+    setUser(userInfo)
+    localStorage.setItem("current_rag_user", JSON.stringify(userInfo))
+    addAuditLog(`Đăng ký tài khoản mới thành công`, "config", `Name: ${name} | Email: ${email}`)
+    return { success: true }
+  }
+
+  const logout = () => {
+    setUser(null)
+    localStorage.removeItem("current_rag_user")
+    addAuditLog(`Đã đăng xuất tài khoản`, "config")
+  }
 
   // Audit Logs State
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([
@@ -511,7 +619,11 @@ Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã h�
       setActiveRagProcess,
       showRagProcessId,
       setShowRagProcessId,
-      processFile
+      processFile,
+      user,
+      login,
+      register,
+      logout
     }}>
       {children}
     </AppContext.Provider>
