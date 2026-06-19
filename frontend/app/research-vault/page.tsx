@@ -19,7 +19,15 @@ import {
 } from "lucide-react"
 import { useApp } from "@/lib/context"
 import { Button } from "@/components/ui/button"
-import { MockDocument, DocumentChunk } from "@/lib/mockRag"
+
+interface SearchResult {
+  id: string;
+  docId: string;
+  docName: string;
+  title: string;
+  snippet: string;
+  score: number;
+}
 
 export default function ResearchVault() {
   const { 
@@ -36,8 +44,9 @@ export default function ResearchVault() {
   // Selection states
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>(documents.map(d => d.id))
   const [searchQuery, setSearchQuery] = useState("")
-  const [searchResults, setSearchResults] = useState<(DocumentChunk & { score: number })[]>([])
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [hasSearched, setHasSearched] = useState(false)
+  const [isSearching, setIsSearching] = useState(false)
 
   // Editor states
   const [reportTitle, setReportTitle] = useState("")
@@ -55,54 +64,45 @@ export default function ResearchVault() {
     }
   }
 
-  // Handle Mock Semantic Search across selected documents
-  const handleSemanticSearch = () => {
+  // Semantic Search via Chat API — uses citations as search results
+  const handleSemanticSearch = async () => {
     if (!searchQuery.trim()) return
 
     setHasSearched(true)
-    const results: (DocumentChunk & { score: number })[] = []
+    setIsSearching(true)
+    setSearchResults([])
 
-    documents.forEach(doc => {
-      if (!selectedDocIds.includes(doc.id)) return
+    try {
+      const { chatAPI } = await import("@/lib/api")
+      const response = await chatAPI.sendMessage(searchQuery)
+      
+      // Convert citations to search results
+      const results: SearchResult[] = (response.message.citations || []).map((c, idx) => ({
+        id: c.chunk_id || `sr-${idx}`,
+        docId: c.document_id,
+        docName: c.document_name,
+        title: c.section_title || "Trích đoạn",
+        snippet: c.content_snippet,
+        score: 0.95 - idx * 0.05, // Approximate score from ranking order
+      }))
 
-      doc.chunks.forEach(chunk => {
-        // Simple search overlap score simulation
-        const contentLower = chunk.snippet.toLowerCase() + " " + chunk.title.toLowerCase()
-        const queryWords = searchQuery.toLowerCase().split(/\s+/)
-        let matchCount = 0
-        
-        queryWords.forEach(word => {
-          if (word.length > 2 && contentLower.includes(word)) {
-            matchCount++
-          }
-        })
-
-        if (matchCount > 0 || queryWords.length === 0) {
-          // Generate a realistic score based on matches
-          const baseScore = 0.5 + (matchCount / queryWords.length) * 0.45
-          const finalScore = Math.min(Math.max(baseScore, 0.4), 0.98)
-          
-          results.push({
-            ...chunk,
-            score: finalScore
-          })
-        }
-      })
-    })
-
-    // Sort by score
-    results.sort((a, b) => b.score - a.score)
-    setSearchResults(results)
-    addAuditLog(`Đã chạy tìm kiếm semantic trong Vault: "${searchQuery}"`, "research", `Bộ lọc: ${selectedDocIds.length} tài liệu | Kết quả: ${results.length} chunks`)
+      setSearchResults(results)
+      addAuditLog(`Đã chạy tìm kiếm semantic trong Vault: "${searchQuery}"`, "research", `Kết quả: ${results.length} trích dẫn`)
+    } catch (err) {
+      console.error("Semantic search failed:", err)
+      addAuditLog(`Lỗi tìm kiếm semantic: "${searchQuery}"`, "research")
+    } finally {
+      setIsSearching(false)
+    }
   }
 
   // Insert quote snippet to editor
-  const handleInsertQuote = (chunk: DocumentChunk) => {
-    const quoteText = `\n> **Trích từ ${chunk.docName} - ${chunk.article}:**\n> "${chunk.snippet}"\n\n`
+  const handleInsertQuote = (result: SearchResult) => {
+    const quoteText = `\n> **Trích từ ${result.docName}${result.title ? ` - ${result.title}` : ''}:**\n> "${result.snippet}"\n\n`
     setReportContent(prev => prev + quoteText)
     
-    if (!editorDocs.includes(chunk.docId)) {
-      setEditorDocs([...editorDocs, chunk.docId])
+    if (!editorDocs.includes(result.docId)) {
+      setEditorDocs([...editorDocs, result.docId])
     }
   }
 
@@ -203,6 +203,11 @@ export default function ResearchVault() {
               <div className="text-center py-12 text-neutral-600 text-[11px] space-y-1">
                 <Sparkles className="w-6 h-6 mx-auto mb-2 opacity-30 text-emerald-400" />
                 <p>Nhập từ khóa và bấm Enter để trích lọc điều khoản.</p>
+              </div>
+            ) : isSearching ? (
+              <div className="text-center py-12 text-neutral-500 text-[11px] space-y-2">
+                <div className="w-6 h-6 mx-auto border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+                <p>Đang tìm kiếm...</p>
               </div>
             ) : searchResults.length === 0 ? (
               <div className="text-center py-12 text-neutral-600 text-[11px]">

@@ -20,7 +20,7 @@ import {
 } from "lucide-react"
 import { useApp } from "@/lib/context"
 import { Button } from "@/components/ui/button"
-import { MockDocument } from "@/lib/mockRag"
+import { type Document } from "@/lib/api"
 
 export default function DocumentLibrary() {
   const { 
@@ -30,6 +30,8 @@ export default function DocumentLibrary() {
     setActiveDocs, 
     uploadProgress, 
     processFile,
+    deleteDocument,
+    reindexDocument,
     showLeftSidebar,
     setShowLeftSidebar,
     addAuditLog
@@ -37,20 +39,22 @@ export default function DocumentLibrary() {
 
   const [searchQuery, setSearchQuery] = useState("")
   const [filterType, setFilterType] = useState<"all" | "pdf" | "docx" | "txt">("all")
-  const [selectedDocForChunks, setSelectedDocForChunks] = useState<MockDocument | null>(null)
+  const [selectedDocForDetail, setSelectedDocForDetail] = useState<Document | null>(null)
   
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Calculate statistics
   const totalFiles = documents.length
   const activeFiles = activeDocs.length
-  const totalChunks = documents.reduce((acc, doc) => acc + doc.chunks.length, 0)
+  const totalChunks = documents.length // We don't have local chunk count from API
   
   // Format total size (e.g. "4.45 MB")
   const totalSize = documents.reduce((acc, doc) => {
-    const numericSize = parseFloat(doc.size);
-    return acc + (isNaN(numericSize) ? 0 : numericSize);
-  }, 0).toFixed(1) + " MB"
+    return acc + (doc.file_size || 0);
+  }, 0)
+  const totalSizeStr = totalSize > 1024 * 1024 
+    ? (totalSize / (1024 * 1024)).toFixed(1) + " MB"
+    : (totalSize / 1024).toFixed(0) + " KB"
 
   // Handle Drag & Drop
   const onDragOver = (e: React.DragEvent) => {
@@ -80,17 +84,13 @@ export default function DocumentLibrary() {
     }
   }
 
-  const handleDeleteDoc = (docId: string, docName: string) => {
-    setDocuments(prev => prev.filter(d => d.id !== docId))
-    setActiveDocs(prev => prev.filter(id => id !== docId))
-    addAuditLog(`Đã xóa tài liệu khỏi kho: ${docName}`, "upload")
+  const handleDeleteDoc = async (docId: string, docName: string) => {
+    await deleteDocument(docId)
   }
 
   // Filter documents
   const filteredDocs = documents.filter(doc => {
-    const matchesSearch = doc.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          doc.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          doc.description.toLowerCase().includes(searchQuery.toLowerCase())
+    const matchesSearch = doc.name.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesType = filterType === "all" || doc.type === filterType
     return matchesSearch && matchesType
   })
@@ -150,7 +150,7 @@ export default function DocumentLibrary() {
             </div>
             <div>
               <div className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider">Phân mảnh vector</div>
-              <div className="text-xl font-bold text-neutral-100 font-mono mt-0.5">{totalChunks} <span className="text-[10px] text-neutral-500 font-normal uppercase">chunks</span></div>
+              <div className="text-xl font-bold text-neutral-100 font-mono mt-0.5">{totalChunks} <span className="text-[10px] text-neutral-500 font-normal uppercase">docs</span></div>
             </div>
           </div>
 
@@ -160,7 +160,7 @@ export default function DocumentLibrary() {
             </div>
             <div>
               <div className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider">Kích thước DB</div>
-              <div className="text-xl font-bold text-neutral-100 font-mono mt-0.5">{totalSize}</div>
+              <div className="text-xl font-bold text-neutral-100 font-mono mt-0.5">{totalSizeStr}</div>
             </div>
           </div>
         </div>
@@ -234,18 +234,12 @@ export default function DocumentLibrary() {
                     >
                       <div className="space-y-2.5">
                         <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <div className={`p-2 rounded-lg shrink-0 ${
-                              doc.type === 'pdf' ? 'bg-red-500/10 text-red-400/80 border border-red-500/10' :
-                              doc.type === 'docx' ? 'bg-sky-500/10 text-sky-400/80 border border-sky-500/10' :
-                              'bg-neutral-500/10 text-neutral-400 border border-neutral-500/10'
-                            }`}>
-                              <FileText className="w-4 h-4" />
+                          <div className="flex flex-col gap-2 min-w-0">
+                            <div className="flex items-center gap-1.5 font-medium text-neutral-300">
+                              <FileText className={`w-3.5 h-3.5 shrink-0 ${isChecked ? "text-emerald-400/60" : "text-neutral-600"}`} />
+                              <span className="truncate">{doc.name}</span>
                             </div>
-                            <div className="min-w-0">
-                              <h4 className="font-bold text-neutral-200 text-[13px] truncate">{doc.name}</h4>
-                              <span className="text-[9px] font-mono text-neutral-500 uppercase">{doc.type} · {doc.size}</span>
-                            </div>
+                            <span className="text-[9px] font-mono text-neutral-500 uppercase">{doc.type} · {doc.file_size ? (doc.file_size > 1024*1024 ? (doc.file_size/(1024*1024)).toFixed(1)+' MB' : (doc.file_size/1024).toFixed(0)+' KB') : 'N/A'}</span>
                           </div>
 
                           {/* Toggle Active Switch */}
@@ -261,8 +255,20 @@ export default function DocumentLibrary() {
                           </button>
                         </div>
 
+                        {/* Status Badge */}
+                        <div className="flex items-center gap-1.5 text-[10px]">
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-bold tracking-wider uppercase border ${
+                            doc.status === 'indexed' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' :
+                            doc.status === 'processing' ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' :
+                            doc.status === 'pending' ? 'bg-sky-500/10 border-sky-500/20 text-sky-400' :
+                            'bg-red-500/10 border-red-500/20 text-red-400'
+                          }`}>
+                            {doc.status}
+                          </span>
+                        </div>
+
                         <p className="text-[11px] text-neutral-400/80 leading-relaxed line-clamp-2">
-                          {doc.description}
+                          {doc.source || `${doc.type.toUpperCase()} document`}
                         </p>
                       </div>
 
@@ -270,17 +276,19 @@ export default function DocumentLibrary() {
                       <div className="flex items-center justify-between pt-3 border-t border-white/[0.04] text-[10px] text-neutral-500 font-mono">
                         <div className="flex items-center gap-1.5">
                           <Calendar className="w-3 h-3 text-neutral-600" />
-                          <span>{doc.uploadDate}</span>
+                          <span>{new Date(doc.created_at).toLocaleDateString()}</span>
                         </div>
                         
                         <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => setSelectedDocForChunks(doc)}
-                            className="text-[11px] text-neutral-500 hover:text-emerald-400 transition-colors font-sans flex items-center gap-1 cursor-pointer"
-                          >
-                            <span>Xem {doc.chunks.length} Chunks</span>
-                            <ChevronRight className="w-3 h-3" />
-                          </button>
+                          {doc.status === 'failed' && (
+                            <button
+                              onClick={() => reindexDocument(doc.id)}
+                              className="text-[11px] text-amber-400/70 hover:text-amber-400 transition-colors font-sans flex items-center gap-1 cursor-pointer"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                              <span>Reindex</span>
+                            </button>
+                          )}
                           
                           <button
                             onClick={() => handleDeleteDoc(doc.id, doc.name)}
@@ -366,71 +374,6 @@ export default function DocumentLibrary() {
         </div>
       </div>
 
-      {/* ===== CHUNK DETAILED DIALOG ===== */}
-      {selectedDocForChunks && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overlay-backdrop">
-          {/* Backdrop overlay */}
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSelectedDocForChunks(null)} />
-          
-          {/* Modal Container */}
-          <div className="relative w-full max-w-2xl max-h-[85vh] bg-[#111111] border border-white/[0.06] rounded-2xl flex flex-col z-10 animate-scale-in overflow-hidden shadow-2xl">
-            
-            {/* Header */}
-            <div className="p-4 border-b border-white/[0.04] flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <Database className="w-4 h-4 text-emerald-400/60" />
-                <div>
-                  <h3 className="font-bold text-neutral-200 text-sm">Cơ cấu Chunks lưu trữ</h3>
-                  <p className="text-[10px] text-neutral-500">{selectedDocForChunks.name} — {selectedDocForChunks.chunks.length} chunks</p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setSelectedDocForChunks(null)}
-                className="p-1.5 rounded-lg hover:bg-white/[0.04] text-neutral-500 hover:text-neutral-200 transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Content list */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin">
-              {selectedDocForChunks.chunks.map((chunk, idx) => (
-                <div 
-                  key={chunk.id}
-                  className="bg-white/[0.01] border border-white/[0.04] rounded-xl p-3.5 space-y-2.5 hover:border-white/[0.08] transition-all"
-                >
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-mono text-emerald-400/60 bg-emerald-500/[0.04] px-2 py-0.5 rounded border border-emerald-500/10">
-                      Chunk #{idx + 1} ({chunk.id})
-                    </span>
-                    <span className="text-neutral-500 font-medium">
-                      {chunk.article} {chunk.clause ? `· ${chunk.clause}` : ""}
-                    </span>
-                  </div>
-                  
-                  <div className="font-semibold text-neutral-200 text-[12px]">
-                    {chunk.title}
-                  </div>
-                  
-                  <p className="text-neutral-400/90 text-[12px] leading-relaxed whitespace-pre-wrap select-text pl-2 border-l border-white/[0.08]">
-                    {chunk.snippet}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {/* Footer */}
-            <div className="p-4 border-t border-white/[0.04] flex justify-end shrink-0">
-              <Button
-                onClick={() => setSelectedDocForChunks(null)}
-                className="bg-emerald-500/80 hover:bg-emerald-500 text-white text-[12px] py-1.5 px-4 rounded-xl font-medium border-0 cursor-pointer"
-              >
-                Đóng
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

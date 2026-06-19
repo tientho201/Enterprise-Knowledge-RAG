@@ -26,8 +26,13 @@ export default function WorkHistory() {
     documents,
     showLeftSidebar,
     setShowLeftSidebar,
-    addAuditLog 
+    addAuditLog,
+    refreshAuditLogs
   } = useApp()
+
+  React.useEffect(() => {
+    refreshAuditLogs()
+  }, [refreshAuditLogs])
 
   const [searchQuery, setSearchQuery] = useState("")
   const [filterType, setFilterType] = useState<"all" | "upload" | "query" | "research" | "config">("all")
@@ -37,15 +42,13 @@ export default function WorkHistory() {
   const totalUploads = documents.length
   const avgLatency = "620 ms"
   
-  // Calculate mock tokens
+  // Calculate estimated tokens from message lengths
   const totalTokens = chatSessions.reduce((acc, sess) => {
     return acc + sess.messages.reduce((mAcc, msg) => {
-      if (msg.ragResponse?.tokensCount) {
-        return mAcc + msg.ragResponse.tokensCount.prompt + msg.ragResponse.tokensCount.completion
-      }
-      return mAcc
+      // Rough estimate: ~4 chars per token
+      return mAcc + Math.round(msg.content.length / 4)
     }, 0)
-  }, 1480) // 1480 is base historical tokens
+  }, 0)
 
   // Filter logs
   const filteredLogs = auditLogs.filter(log => {

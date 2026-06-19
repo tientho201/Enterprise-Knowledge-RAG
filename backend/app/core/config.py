@@ -64,10 +64,9 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Embedding
-    EMBEDDING_MODEL: str = "BAAI/bge-m3"
-    EMBEDDING_BATCH_SIZE: int = 32
-    EMBEDDING_DEVICE: str = "cpu"
+    # Embedding (OpenAI)
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_BATCH_SIZE: int = 512
 
     # Chunking
     CHUNK_SIZE: int = 800

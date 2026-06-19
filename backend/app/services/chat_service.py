@@ -19,7 +19,13 @@ class ChatService:
         self.db = db
         self.repo = ConversationRepository(db)
 
-    async def chat(self, user_id: str, message: str, conversation_id: str | None = None) -> ChatResponse:
+    async def chat(
+        self,
+        user_id: str,
+        message: str,
+        conversation_id: str | None = None,
+        search_tool: bool | None = False,
+    ) -> ChatResponse:
         # Get or create conversation
         if conversation_id:
             conv = await self.repo.get_by_id(conversation_id, user_id)
@@ -47,30 +53,48 @@ class ChatService:
             "final_answer": None,
             "confidence_score": 0.0,
             "retry_count": 0,
+            "search_tool": search_tool,
         }
         final_state = await graph.ainvoke(initial_state)
-        answer = final_state.get("final_answer") or "Xin lỗi, tôi không thể tìm thấy thông tin liên quan trong tài liệu."
+        answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."
         citations = final_state.get("citations", [])
 
         # Save assistant message
-        assistant_msg = await self.repo.add_message(conv.id, MessageRole.assistant, answer)
+        import json
+        content_to_save = answer
+        if citations:
+            content_to_save += f"\n<!--citations:{json.dumps(citations)}-->"
+        assistant_msg = await self.repo.add_message(conv.id, MessageRole.assistant, content_to_save)
 
-        # Save citations to DB
+        # Save citations to DB (skip web citations which are not in local DB chunks table)
         if citations:
             from app.models.citation import Citation
             for cit in citations:
-                citation_record = Citation(
-                    chunk_id=cit["chunk_id"],
-                    message_id=assistant_msg.id,
-                )
-                self.db.add(citation_record)
+                chunk_id = cit.get("chunk_id", "")
+                if chunk_id and not chunk_id.startswith("web_"):
+                    citation_record = Citation(
+                        chunk_id=chunk_id,
+                        message_id=assistant_msg.id,
+                    )
+                    self.db.add(citation_record)
+
+        # Save audit log to DB/Supabase
+        from app.repositories.audit_log_repo import AuditLogRepository
+        audit_repo = AuditLogRepository(self.db)
+        await audit_repo.create(
+            user_id=user_id,
+            action=f'Chạy truy vấn RAG: "{message[:30] + "..." if len(message) > 30 else message}"',
+            resource_type="query",
+            resource_id=conv.id,
+            extra_data={"details": f"Trích dẫn: {len(citations)}"}
+        )
 
         return ChatResponse(
             conversation_id=conv.id,
             message=MessageResponse(
                 id=assistant_msg.id,
                 role=assistant_msg.role,
-                content=assistant_msg.content,
+                content=answer,
                 created_at=assistant_msg.created_at,
                 citations=citations,
             ),
@@ -92,15 +116,32 @@ class ChatService:
         conv = await self.repo.get_by_id(conv_id, user_id)
         if not conv:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
-        messages = [
-            MessageResponse(
-                id=m.id,
-                role=m.role,
-                content=m.content,
-                created_at=m.created_at,
+        
+        import re
+        import json
+        
+        messages = []
+        for m in conv.messages:
+            content = m.content
+            citations = []
+            if m.role == MessageRole.assistant:
+                match = re.search(r"<!--citations:(.*?)-->", content, re.DOTALL)
+                if match:
+                    try:
+                        citations = json.loads(match.group(1))
+                    except Exception:
+                        pass
+                    content = re.sub(r"\s*<!--citations:.*?-->", "", content, flags=re.DOTALL)
+            
+            messages.append(
+                MessageResponse(
+                    id=m.id,
+                    role=m.role,
+                    content=content,
+                    created_at=m.created_at,
+                    citations=citations,
+                )
             )
-            for m in conv.messages
-        ]
         return ConversationDetailResponse(
             id=conv.id,
             title=conv.title,

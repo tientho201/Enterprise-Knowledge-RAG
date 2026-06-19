@@ -14,8 +14,13 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 @router.post("", response_model=ChatResponse)
 async def chat(body: ChatRequest, user_id: CurrentUserIdDep, db: DbDep):
+    import logging
+    logging.getLogger(__name__).info(
+        f"Incoming ChatRequest: user_id={user_id}, message={repr(body.message)}, "
+        f"conversation_id={body.conversation_id}, search_tool={body.search_tool}"
+    )
     service = ChatService(db)
-    return await service.chat(user_id, body.message, body.conversation_id)
+    return await service.chat(user_id, body.message, body.conversation_id, body.search_tool)
 
 
 @router.get("/history", response_model=list[ConversationResponse])

@@ -22,7 +22,7 @@ class DocumentService:
         self.db = db
         self.repo = DocumentRepository(db)
 
-    async def upload(self, file: UploadFile) -> DocumentResponse:
+    async def upload(self, file: UploadFile, user_id: str | None = None) -> DocumentResponse:
         if file.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -48,6 +48,17 @@ class DocumentService:
             file_size=len(file_bytes),
         )
 
+        # Save audit log to DB
+        from app.repositories.audit_log_repo import AuditLogRepository
+        audit_repo = AuditLogRepository(self.db)
+        await audit_repo.create(
+            user_id=user_id,
+            action=f"Đã nạp tài liệu: {file.filename}",
+            resource_type="upload",
+            resource_id=doc.id,
+            extra_data={"details": f"Kích thước: {(len(file_bytes) / 1024):.0f} KB | Trạng thái: Sẵn sàng"},
+        )
+
         # Dispatch async ingestion task (non-blocking)
         from app.workers.tasks.ingestion import ingest_document
         ingest_document.delay(doc.id, object_name)
@@ -70,18 +81,42 @@ class DocumentService:
             page_size=page_size,
         )
 
-    async def delete(self, doc_id: str) -> None:
+    async def delete(self, doc_id: str, user_id: str | None = None) -> None:
+        doc = await self.repo.get_by_id(doc_id)
+        doc_name = doc.name if doc else doc_id
         deleted = await self.repo.soft_delete(doc_id)
         if not deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+        # Save audit log to DB
+        from app.repositories.audit_log_repo import AuditLogRepository
+        audit_repo = AuditLogRepository(self.db)
+        await audit_repo.create(
+            user_id=user_id,
+            action=f"Đã xóa tài liệu: {doc_name}",
+            resource_type="upload",
+            resource_id=doc_id,
+        )
+
         # Queue vector cleanup
         from app.workers.tasks.ingestion import delete_document_vectors
         delete_document_vectors.delay(doc_id)
 
-    async def reindex(self, doc_id: str) -> DocumentResponse:
+    async def reindex(self, doc_id: str, user_id: str | None = None) -> DocumentResponse:
         doc = await self.repo.get_by_id(doc_id)
         if not doc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+        # Save audit log to DB
+        from app.repositories.audit_log_repo import AuditLogRepository
+        audit_repo = AuditLogRepository(self.db)
+        await audit_repo.create(
+            user_id=user_id,
+            action=f"Đã yêu cầu reindex tài liệu: {doc.name}",
+            resource_type="upload",
+            resource_id=doc_id,
+        )
+
         from app.workers.tasks.ingestion import reindex_document
         reindex_document.delay(doc_id)
         return DocumentResponse.model_validate(doc)

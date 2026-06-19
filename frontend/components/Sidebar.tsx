@@ -24,8 +24,7 @@ export default function Sidebar() {
     chatSessions, 
     activeSessionId, 
     setActiveSessionId,
-    setActiveDocs,
-    documents,
+    loadConversation,
     showLeftSidebar, 
     setShowLeftSidebar,
     handleNewChat,
@@ -43,9 +42,10 @@ export default function Sidebar() {
     { name: "Lịch sử làm việc", href: "/work-history", icon: History }
   ]
 
-  const handleSessionClick = (sessionId: string, activeDocs: string[]) => {
+  const handleSessionClick = async (sessionId: string) => {
     setActiveSessionId(sessionId)
-    setActiveDocs(activeDocs || documents.map(d => d.id))
+    // Load conversation messages if not already loaded
+    await loadConversation(sessionId)
     if (pathname !== "/") {
       router.push("/")
     }
@@ -125,7 +125,7 @@ export default function Sidebar() {
           return (
             <div
               key={session.id}
-              onClick={() => handleSessionClick(session.id, session.activeDocs)}
+              onClick={() => handleSessionClick(session.id)}
               className={`group flex items-center justify-between px-3 py-2 rounded-lg text-[13px] cursor-pointer transition-all ${
                 isActive 
                   ? "bg-white/[0.06] text-neutral-100" 
@@ -200,7 +200,7 @@ export default function Sidebar() {
           <span className="text-[10px] font-mono text-emerald-400/70">Online</span>
         </div>
         <div className="text-[10px] text-neutral-600 flex justify-between items-center">
-          <span>localhost:19530</span>
+          <span>localhost:8000</span>
           <Database className="w-3 h-3" />
         </div>
       </div>

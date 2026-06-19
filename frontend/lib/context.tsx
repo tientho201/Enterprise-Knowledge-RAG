@@ -1,14 +1,25 @@
 "use client"
 
-import React, { createContext, useContext, useState, useEffect } from "react"
-import { 
-  initialDocuments, 
-  getMockRAGResponse, 
-  simulateDocumentProcessing,
-  MockDocument, 
-  RAGResponse,
-  DocumentChunk
-} from "./mockRag"
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react"
+import {
+  authAPI,
+  chatAPI,
+  documentsAPI,
+  auditLogsAPI,
+  clearTokens,
+  getAccessToken,
+  setTokens,
+  ApiError,
+  type AuthUser,
+  type Document,
+  type ConversationSummary,
+  type ChatMessage,
+  type Citation,
+} from "./api"
+
+// ============================================================
+// Interfaces
+// ============================================================
 
 export interface Message {
   id: string;
@@ -16,21 +27,23 @@ export interface Message {
   content: string;
   isStreaming?: boolean;
   timestamp: string;
-  ragResponse?: RAGResponse;
+  citations?: Citation[];
 }
 
 export interface User {
   id: string;
   name: string;
   email: string;
+  role: "user" | "admin";
   avatarUrl?: string;
 }
 
 export interface ChatSession {
-  id: string;
+  id: string;        // conversation_id from backend, or "new-<timestamp>" for unsaved
   title: string;
   messages: Message[];
-  activeDocs: string[];
+  messageCount?: number;
+  isLoaded?: boolean; // whether full messages are loaded from API
 }
 
 export interface CustomModel {
@@ -65,8 +78,8 @@ export interface RagSettings {
 }
 
 interface AppContextType {
-  documents: MockDocument[];
-  setDocuments: React.Dispatch<React.SetStateAction<MockDocument[]>>;
+  documents: Document[];
+  setDocuments: React.Dispatch<React.SetStateAction<Document[]>>;
   activeDocs: string[];
   setActiveDocs: React.Dispatch<React.SetStateAction<string[]>>;
   chatSessions: ChatSession[];
@@ -97,98 +110,93 @@ interface AppContextType {
   addSavedResearch: (title: string, content: string, docIds: string[]) => void;
   handleNewChat: () => void;
   handleDeleteSession: (id: string, e?: React.MouseEvent) => void;
-  handleSendMessage: (messageText: string) => void;
+  handleSendMessage: (messageText: string, searchTool?: boolean | null) => void;
   isLlmGenerating: boolean;
   setIsLlmGenerating: React.Dispatch<React.SetStateAction<boolean>>;
-  activeRagProcess: RAGResponse | null;
-  setActiveRagProcess: React.Dispatch<React.SetStateAction<RAGResponse | null>>;
   showRagProcessId: string | null;
   setShowRagProcessId: React.Dispatch<React.SetStateAction<string | null>>;
   processFile: (file: File) => Promise<void>;
+  deleteDocument: (docId: string) => Promise<void>;
+  reindexDocument: (docId: string) => Promise<void>;
+  loadConversation: (conversationId: string) => Promise<void>;
   user: User | null;
+  isAuthLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   register: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
+  refreshDocuments: () => Promise<void>;
+  refreshChatHistory: () => Promise<void>;
+  refreshAuditLogs: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined)
 
+// ============================================================
+// Helper: Preprocess citations in raw content from backend
+// ============================================================
+export function preprocessCitations(content: string, citations?: Citation[]): string {
+  if (!content) return "";
+  if (!citations || citations.length === 0) return content;
+  // Match [SOURCE: chunk_id] or [SOURCE: chunk-id] or [SOURCE: web_id] case-insensitive
+  return content.replace(/\[SOURCE:\s*([^\]]+)\]/gi, (match, chunkId) => {
+    const citation = citations.find(c => c.chunk_id === chunkId);
+    if (citation) {
+      // Build a premium label format: "Document Name - Section / Page / Detail"
+      if (chunkId.toLowerCase().startsWith("web_")) {
+        const label = `Web - ${citation.document_name}`;
+        return `[${label}](#cite-${chunkId})`;
+      } else {
+        const section = citation.section_title || (citation.page_number ? `Trang ${citation.page_number}` : 'Chi tiết');
+        const label = `${citation.document_name} - ${section}`;
+        return `[${label}](#cite-${chunkId})`;
+      }
+    }
+    return `[Nguồn - ${chunkId}](#cite-${chunkId})`;
+  });
+}
+
+// ============================================================
+// Helper: Map backend user to frontend User
+// ============================================================
+function mapAuthUser(u: AuthUser): User {
+  return {
+    id: u.id,
+    name: u.full_name || u.email.split("@")[0],
+    email: u.email,
+    role: u.role,
+    avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(u.full_name || u.email)}`,
+  }
+}
+
+// ============================================================
+// Default empty session
+// ============================================================
+function createEmptySession(): ChatSession {
+  return {
+    id: `new-${Date.now()}`,
+    title: "Hội thoại mới",
+    messages: [],
+    isLoaded: true,
+  }
+}
+
+// ============================================================
+// Provider
+// ============================================================
 export function AppContextProvider({ children }: { children: React.ReactNode }) {
   // --- States ---
-  const [documents, setDocuments] = useState<MockDocument[]>(initialDocuments)
-  const [activeDocs, setActiveDocs] = useState<string[]>(initialDocuments.map(d => d.id))
-  
-  const [chatSessions, setChatSessions] = useState<ChatSession[]>([
-    {
-      id: "session-1",
-      title: "Tìm hiểu Doanh nghiệp Xã hội",
-      activeDocs: ["ldn-2020"],
-      messages: [
-        {
-          id: "m1",
-          role: "user",
-          content: "Điều kiện để doanh nghiệp được công nhận là doanh nghiệp xã hội?",
-          timestamp: "15:00"
-        },
-        {
-          id: "m2",
-          role: "assistant",
-          content: `Dựa trên **Luật Doanh nghiệp 2020**, cụ thể là tại [Luật Doanh nghiệp 2020 - Điều 5](#cite-ldn-c1) (Độ tương đồng: 96%), một doanh nghiệp để được công nhận là **Doanh nghiệp xã hội** phải đáp ứng đầy đủ **03 tiêu chí cốt lõi** sau đây:
+  const [documents, setDocuments] = useState<Document[]>([])
+  const [activeDocs, setActiveDocs] = useState<string[]>([])
 
-1. **Về hình thức pháp lý**: Doanh nghiệp phải được đăng ký thành lập theo đúng quy định của Luật này (có thể là Công ty TNHH, Công ty Cổ phần, v.v.).
-2. **Mục tiêu hoạt động**: Mục tiêu chính khi thành lập và vận hành là nhằm **giải quyết các vấn đề xã hội, môi trường** vì lợi ích cộng đồng.
-3. **Cam kết tái đầu tư tài chính**: Doanh nghiệp phải sử dụng **ít nhất 51% tổng lợi nhuận sau thuế hằng năm** để tái đầu tư phục vụ trực tiếp cho các mục tiêu xã hội, môi trường như đã đăng ký.
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([createEmptySession()])
+  const [activeSessionId, setActiveSessionId] = useState<string>(chatSessions[0]?.id || "")
 
-Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã hội có nghĩa vụ tuân thủ các quy chế giám sát nghiêm ngặt từ cơ quan quản lý và các bên tài trợ. Nếu thay đổi mục tiêu hoặc không duy trì cam kết lợi nhuận, doanh nghiệp phải thông báo để chuyển đổi hình thức hoạt động.`,
-          timestamp: "15:00",
-          ragResponse: {
-            answer: `Dựa trên **Luật Doanh nghiệp 2020**, cụ thể là tại [Luật Doanh nghiệp 2020 - Điều 5](#cite-ldn-c1) (Độ tương đồng: 96%), một doanh nghiệp để được công nhận là **Doanh nghiệp xã hội** phải đáp ứng đầy đủ **03 tiêu chí cốt lõi** sau đây:
-
-1. **Về hình thức pháp lý**: Doanh nghiệp phải được đăng ký thành lập theo đúng quy định của Luật này (có thể là Công ty TNHH, Công ty Cổ phần, v.v.).
-2. **Mục tiêu hoạt động**: Mục tiêu chính khi thành lập và vận hành là nhằm **giải quyết các vấn đề xã hội, môi trường** vì lợi ích cộng đồng.
-3. **Cam kết tái đầu tư tài chính**: Doanh nghiệp phải sử dụng **ít nhất 51% tổng lợi nhuận sau thuế hằng năm** để tái đầu tư phục vụ trực tiếp cho các mục tiêu xã hội, môi trường như đã đăng ký.
-
-Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã hội có nghĩa vụ tuân thủ các quy chế giám sát nghiêm ngặt từ cơ quan quản lý và các bên tài trợ. Nếu thay đổi mục tiêu hoặc không duy trì cam kết lợi nhuận, doanh nghiệp phải thông báo để chuyển đổi hình thức hoạt động.`,
-            processingTimeMs: 680,
-            tokensCount: { prompt: 250, completion: 480 },
-            steps: [
-              { name: 'Phân tích & Dịch câu hỏi (Query Expansion)', status: 'completed', details: 'Từ khóa chính: "doanh nghiệp xã hội" | Chế độ: Hybrid' },
-              { name: 'Truy xuất tài liệu từ Vector DB', status: 'completed', details: 'Tìm thấy 3 chunks. Lọc lại 1 chunks phù hợp (Threshold > 0.3)' },
-              { name: 'Đánh giá xếp hạng chéo (Reranking)', status: 'completed', details: 'Sử dụng mô hình GPT-4o Reranker' },
-              { name: 'Tạo Prompt ngữ cảnh & Gửi LLM', status: 'completed', details: 'Context size: ~320 ký tự.' }
-            ],
-            citations: [
-              {
-                id: 'ldn-c1',
-                docId: 'ldn-2020',
-                docName: 'Luật Doanh nghiệp 2020',
-                title: 'Điều 5: Tiêu chí, quyền và nghĩa vụ của doanh nghiệp xã hội',
-                article: 'Điều 5',
-                clause: 'Khoản 1',
-                snippet: 'Doanh nghiệp xã hội phải đáp ứng các tiêu chí sau đây: a) Là doanh nghiệp được đăng ký thành lập theo quy định của Luật này; b) Mục tiêu hoạt động nhằm giải quyết vấn đề xã hội, môi trường vì lợi ích cộng đồng; c) Sử dụng ít nhất 51% tổng lợi nhuận sau thuế hằng năm của doanh nghiệp để tái đầu tư nhằm thực hiện mục tiêu xã hội, môi trường như đã đăng ký.',
-                score: 0.96
-              }
-            ]
-          }
-        }
-      ]
-    },
-    {
-      id: "session-2",
-      title: "Chính sách bảo mật nội bộ",
-      activeDocs: ["qcbm-2025"],
-      messages: []
-    }
-  ])
-  
-  const [activeSessionId, setActiveSessionId] = useState<string>("session-1")
   const [customModels, setCustomModels] = useState<CustomModel[]>([])
   const [showLeftSidebar, setShowLeftSidebar] = useState<boolean>(true)
   const [showRightPanel, setShowRightPanel] = useState<boolean>(true)
   const [rightPanelTab, setRightPanelTab] = useState<"docs" | "settings">("docs")
   const [isLlmGenerating, setIsLlmGenerating] = useState<boolean>(false)
-  const [activeRagProcess, setActiveRagProcess] = useState<RAGResponse | null>(null)
-  const [showRagProcessId, setShowRagProcessId] = useState<string | null>("m2")
+  const [showRagProcessId, setShowRagProcessId] = useState<string | null>(null)
 
   const [ragSettings, setRagSettings] = useState<RagSettings>({
     searchMode: "Lai (Hybrid)",
@@ -205,162 +213,23 @@ Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã h�
     isUploading: boolean;
   } | null>(null)
 
-  // --- Auth State & Operations ---
+  // --- Auth State ---
   const [user, setUser] = useState<User | null>(null)
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true)
 
-  useEffect(() => {
-    // 1. Ensure mock users list exists in localStorage
-    const existingUsers = localStorage.getItem("rag_users")
-    if (!existingUsers) {
-      const demoUsers = [
-        {
-          id: "user-demo",
-          name: "Admin User",
-          email: "admin@enterprise.com",
-          password: "admin123"
-        }
-      ]
-      localStorage.setItem("rag_users", JSON.stringify(demoUsers))
-    }
+  // Audit Logs (client-side only)
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
 
-    // 2. Load current user
-    const currentUser = localStorage.getItem("current_rag_user")
-    if (currentUser) {
-      try {
-        setUser(JSON.parse(currentUser))
-      } catch (e) {
-        console.error("Failed to parse current user", e)
-      }
-    }
-  }, [])
+  // Saved Research (client-side only)
+  const [savedResearch, setSavedResearch] = useState<SavedResearch[]>([])
 
-  const login = async (email: string, password: string) => {
-    const usersStr = localStorage.getItem("rag_users") || "[]"
-    let users = []
-    try {
-      users = JSON.parse(usersStr)
-    } catch (e) {
-      users = []
-    }
+  // Track if initial data has been loaded
+  const initializedRef = useRef(false)
 
-    const matchedUser = users.find((u: any) => u.email.toLowerCase() === email.toLowerCase() && u.password === password)
-    if (matchedUser) {
-      const userInfo = {
-        id: matchedUser.id,
-        name: matchedUser.name,
-        email: matchedUser.email,
-        avatarUrl: matchedUser.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(matchedUser.name)}`
-      }
-      setUser(userInfo)
-      localStorage.setItem("current_rag_user", JSON.stringify(userInfo))
-      addAuditLog(`Người dùng ${matchedUser.name} đăng nhập thành công`, "config", `Email: ${email}`)
-      return { success: true }
-    } else {
-      return { success: false, error: "Email hoặc mật khẩu không chính xác!" }
-    }
-  }
-
-  const register = async (name: string, email: string, password: string) => {
-    const usersStr = localStorage.getItem("rag_users") || "[]"
-    let users = []
-    try {
-      users = JSON.parse(usersStr)
-    } catch (e) {
-      users = []
-    }
-
-    if (users.some((u: any) => u.email.toLowerCase() === email.toLowerCase())) {
-      return { success: false, error: "Email này đã được sử dụng!" }
-    }
-
-    const newUser = {
-      id: `user-${Date.now()}`,
-      name,
-      email,
-      password,
-      avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(name)}`
-    }
-
-    users.push(newUser)
-    localStorage.setItem("rag_users", JSON.stringify(users))
-
-    const userInfo = {
-      id: newUser.id,
-      name: newUser.name,
-      email: newUser.email,
-      avatarUrl: newUser.avatarUrl
-    }
-    setUser(userInfo)
-    localStorage.setItem("current_rag_user", JSON.stringify(userInfo))
-    addAuditLog(`Đăng ký tài khoản mới thành công`, "config", `Name: ${name} | Email: ${email}`)
-    return { success: true }
-  }
-
-  const logout = () => {
-    setUser(null)
-    localStorage.removeItem("current_rag_user")
-    addAuditLog(`Đã đăng xuất tài khoản`, "config")
-  }
-
-  // Audit Logs State
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([
-    {
-      id: "log-1",
-      action: "Khởi tạo hệ thống Enterprise Knowledge RAG",
-      type: "config",
-      timestamp: "16:00:10",
-      details: "Mô hình mặc định: Gemini 1.5 Flash. Hệ thống vector database sẵn sàng."
-    },
-    {
-      id: "log-2",
-      action: "Đã indexing tài liệu: Luật Doanh nghiệp 2020",
-      type: "upload",
-      timestamp: "16:01:25",
-      details: "Mã: 59/2020/QH14 | Kích thước: 1.2 MB | Đã tách làm 3 chunks."
-    },
-    {
-      id: "log-3",
-      action: "Đã indexing tài liệu: Bộ luật Dân sự 2015",
-      type: "upload",
-      timestamp: "16:02:10",
-      details: "Mã: 91/2015/QH13 | Kích thước: 2.8 MB | Đã tách làm 3 chunks."
-    },
-    {
-      id: "log-4",
-      action: "Đã indexing tài liệu: Quy chế bảo mật thông tin nội bộ",
-      type: "upload",
-      timestamp: "16:03:00",
-      details: "Mã: QC-BM-01/2025 | Kích thước: 450 KB | Đã tách làm 2 chunks."
-    },
-    {
-      id: "log-5",
-      action: "Chạy truy vấn RAG: Điều kiện doanh nghiệp xã hội",
-      type: "query",
-      timestamp: "16:05:00",
-      details: "Model: Gemini 1.5 Flash | Thời gian xử lý: 680ms | Tìm thấy 1 trích dẫn phù hợp."
-    }
-  ])
-
-  // Saved Research State
-  const [savedResearch, setSavedResearch] = useState<SavedResearch[]>([
-    {
-      id: "res-1",
-      title: "Điều kiện & Nghĩa vụ của Doanh nghiệp Xã hội",
-      content: `Dựa trên phân tích Điều 5 Luật Doanh nghiệp 2020:
-- Doanh nghiệp phải đăng ký thành lập theo luật định.
-- Mục tiêu giải quyết các vấn đề xã hội/môi trường.
-- Cam kết giữ lại ít nhất 51% lợi nhuận sau thuế hàng năm để tái đầu tư vào mục tiêu xã hội.
-- Cần ký thỏa thuận cam kết và nộp cho cơ quan đăng ký kinh doanh.`,
-      date: "2026-06-17 15:30",
-      docIds: ["ldn-2020"]
-    }
-  ])
-
-  // Computed state
-  const activeSession = chatSessions.find(s => s.id === activeSessionId) || chatSessions[0]
-
-  // --- Helpers ---
-  const addAuditLog = (action: string, type: AuditLog["type"], details?: string) => {
+  // ============================================================
+  // Audit Logs
+  // ============================================================
+  const addAuditLog = useCallback((action: string, type: AuditLog["type"], details?: string) => {
     const newLog: AuditLog = {
       id: `log-${Date.now()}`,
       action,
@@ -369,9 +238,20 @@ Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã h�
       details
     }
     setAuditLogs(prev => [newLog, ...prev])
-  }
 
-  const addSavedResearch = (title: string, content: string, docIds: string[]) => {
+    // Save to backend database (Supabase) if authenticated
+    // Skip "query" and "upload" types because they are automatically logged by backend services
+    if (getAccessToken() && type !== "query" && type !== "upload") {
+      auditLogsAPI.create(action, type, details).catch((err) => {
+        console.error("Failed to save audit log to DB:", err)
+      })
+    }
+  }, [])
+
+  // ============================================================
+  // Saved Research
+  // ============================================================
+  const addSavedResearch = useCallback((title: string, content: string, docIds: string[]) => {
     const newRes: SavedResearch = {
       id: `res-${Date.now()}`,
       title,
@@ -381,33 +261,218 @@ Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã h�
     }
     setSavedResearch(prev => [newRes, ...prev])
     addAuditLog(`Đã lưu báo cáo nghiên cứu: ${title}`, "research", `Liên kết với ${docIds.length} tài liệu.`)
+  }, [addAuditLog])
+
+  // ============================================================
+  // Data Loaders
+  // ============================================================
+  const refreshAuditLogs = useCallback(async () => {
+    try {
+      const data = await auditLogsAPI.list()
+      const mappedLogs: AuditLog[] = data.map((log) => ({
+        id: log.id,
+        action: log.action,
+        type: (log.resource_type || "config") as AuditLog["type"],
+        timestamp: new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        details: log.extra_data?.details || undefined,
+      }))
+      setAuditLogs(mappedLogs)
+    } catch (err) {
+      console.error("Failed to load audit logs:", err)
+    }
+  }, [])
+
+  const refreshDocuments = useCallback(async () => {
+    try {
+      const data = await documentsAPI.list(1, 100)
+      setDocuments(data.items)
+      setActiveDocs(data.items.filter(d => d.status === "indexed").map(d => d.id))
+    } catch (err) {
+      console.error("Failed to load documents:", err)
+    }
+  }, [])
+
+  const loadConversation = useCallback(async (conversationId: string) => {
+    // Skip if already loaded or if it's a new session
+    if (conversationId.startsWith("new-")) return
+
+    try {
+      const conv = await chatAPI.getConversation(conversationId)
+      const messages: Message[] = conv.messages.map((m: ChatMessage) => ({
+        id: m.id,
+        role: m.role,
+        content: preprocessCitations(m.content, m.citations),
+        timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        citations: m.citations,
+      }))
+
+      setChatSessions(prev => prev.map(s =>
+        s.id === conversationId
+          ? { ...s, messages, title: conv.title || s.title, isLoaded: true }
+          : s
+      ))
+    } catch (err) {
+      console.error("Failed to load conversation:", err)
+    }
+  }, [])
+
+  const refreshChatHistory = useCallback(async () => {
+    try {
+      const history = await chatAPI.getHistory()
+      const sessions: ChatSession[] = history.map((conv: ConversationSummary) => ({
+        id: conv.id,
+        title: conv.title || "Hội thoại",
+        messages: [],
+        messageCount: conv.message_count,
+        isLoaded: false,
+      }))
+
+      // Add empty "new" session at top if needed
+      setChatSessions(prev => {
+        const newSessions = prev.filter(s => s.id.startsWith("new-") && s.messages.length === 0)
+        return [...newSessions, ...sessions]
+      })
+
+      // Restore active session if stored in localStorage
+      const storedActiveId = localStorage.getItem("active_session_id")
+      if (storedActiveId && history.some(conv => conv.id === storedActiveId)) {
+        setActiveSessionId(storedActiveId)
+        loadConversation(storedActiveId)
+      }
+    } catch (err) {
+      console.error("Failed to load chat history:", err)
+    }
+  }, [loadConversation])
+
+  // ============================================================
+  // Init: Restore session from stored token
+  // ============================================================
+  useEffect(() => {
+    if (initializedRef.current) return
+    initializedRef.current = true
+
+    const token = getAccessToken()
+    if (!token) {
+      setIsAuthLoading(false)
+      return
+    }
+
+    // Try to restore user session
+    authAPI.me()
+      .then((authUser) => {
+        setUser(mapAuthUser(authUser))
+        // Load data after auth
+        return Promise.all([refreshDocuments(), refreshChatHistory(), refreshAuditLogs()])
+      })
+      .then(() => {
+        addAuditLog("Khởi tạo hệ thống — phiên đăng nhập đã được khôi phục", "config")
+      })
+      .catch((err) => {
+        console.error("Session restore failed:", err)
+        clearTokens()
+      })
+      .finally(() => {
+        setIsAuthLoading(false)
+      })
+  }, [refreshDocuments, refreshChatHistory, addAuditLog])
+
+  // ============================================================
+  // Sync activeSessionId to localStorage for session persistence
+  // ============================================================
+  useEffect(() => {
+    if (typeof window !== "undefined" && activeSessionId) {
+      if (!activeSessionId.startsWith("new-")) {
+        localStorage.setItem("active_session_id", activeSessionId)
+      } else {
+        localStorage.removeItem("active_session_id")
+      }
+    }
+  }, [activeSessionId])
+
+  // ============================================================
+  // Auth Operations
+  // ============================================================
+  const login = async (email: string, password: string) => {
+    try {
+      const tokens = await authAPI.login(email, password)
+      setTokens(tokens.access_token, tokens.refresh_token)
+
+      const authUser = await authAPI.me()
+      const userInfo = mapAuthUser(authUser)
+      setUser(userInfo)
+
+      // Load initial data
+      await Promise.all([refreshDocuments(), refreshChatHistory(), refreshAuditLogs()])
+      addAuditLog(`Người dùng ${userInfo.name} đăng nhập thành công`, "config", `Email: ${email}`)
+
+      return { success: true }
+    } catch (err) {
+      const message = err instanceof ApiError ? err.detail : "Có lỗi xảy ra khi đăng nhập!"
+      return { success: false, error: message }
+    }
   }
+
+  const register = async (name: string, email: string, password: string) => {
+    try {
+      // 1. Register
+      await authAPI.register(email, password, name)
+
+      // 2. Auto-login after register
+      const tokens = await authAPI.login(email, password)
+      setTokens(tokens.access_token, tokens.refresh_token)
+
+      const authUser = await authAPI.me()
+      const userInfo = mapAuthUser(authUser)
+      setUser(userInfo)
+
+      await Promise.all([refreshDocuments(), refreshChatHistory(), refreshAuditLogs()])
+      addAuditLog(`Đăng ký tài khoản mới thành công`, "config", `Name: ${name} | Email: ${email}`)
+
+      return { success: true }
+    } catch (err) {
+      const message = err instanceof ApiError ? err.detail : "Có lỗi xảy ra khi đăng ký!"
+      return { success: false, error: message }
+    }
+  }
+
+  const logout = () => {
+    addAuditLog(`Đã đăng xuất tài khoản`, "config")
+    setUser(null)
+    clearTokens()
+    setChatSessions([createEmptySession()])
+    setDocuments([])
+    setActiveDocs([])
+  }
+
+  // ============================================================
+  // Chat Operations
+  // ============================================================
+  const activeSession = chatSessions.find(s => s.id === activeSessionId) || chatSessions[0] || createEmptySession()
 
   const handleNewChat = () => {
-    const newSessionId = `session-${Date.now()}`
-    const newSession: ChatSession = {
-      id: newSessionId,
-      title: "Hội thoại mới",
-      activeDocs: documents.map(d => d.id),
-      messages: []
-    }
-    setChatSessions([newSession, ...chatSessions])
-    setActiveSessionId(newSessionId)
-    addAuditLog("Đã tạo hội thoại mới", "query", `ID: ${newSessionId}`)
+    const newSession = createEmptySession()
+    setChatSessions(prev => [newSession, ...prev])
+    setActiveSessionId(newSession.id)
+    addAuditLog("Đã tạo hội thoại mới", "query")
   }
 
-  const handleDeleteSession = (id: string, e?: React.MouseEvent) => {
+  const handleDeleteSession = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation()
+
+    // Delete from backend if it's a real conversation
+    if (!id.startsWith("new-")) {
+      try {
+        await chatAPI.deleteConversation(id)
+      } catch (err) {
+        console.error("Failed to delete conversation:", err)
+      }
+    }
+
     const updated = chatSessions.filter(s => s.id !== id)
     if (updated.length === 0) {
-      const fallbackId = `session-${Date.now()}`
-      setChatSessions([{
-        id: fallbackId,
-        title: "Hội thoại mới",
-        activeDocs: documents.map(d => d.id),
-        messages: []
-      }])
-      setActiveSessionId(fallbackId)
+      const fallback = createEmptySession()
+      setChatSessions([fallback])
+      setActiveSessionId(fallback.id)
     } else {
       setChatSessions(updated)
       if (activeSessionId === id) {
@@ -417,10 +482,10 @@ Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã h�
     addAuditLog("Đã xóa hội thoại", "query", `ID hội thoại: ${id}`)
   }
 
-  const handleSendMessage = (messageText: string) => {
+  const handleSendMessage = async (messageText: string, searchTool?: boolean | null) => {
     if (!messageText.trim() || isLlmGenerating) return
 
-    // 1. Append user message
+    // 1. Add user message to UI immediately
     const userMsgId = `u-${Date.now()}`
     const userMessage: Message = {
       id: userMsgId,
@@ -429,149 +494,246 @@ Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã h�
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
 
-    const updatedMessages = [...activeSession.messages, userMessage]
-    
-    // Update active chat session title if it was default
-    let updatedTitle = activeSession.title
-    if (activeSession.title === "Hội thoại mới" || activeSession.messages.length === 0) {
+    const currentSession = activeSession
+    const updatedMessages = [...currentSession.messages, userMessage]
+
+    // Update title if new session
+    let updatedTitle = currentSession.title
+    if (currentSession.title === "Hội thoại mới" || currentSession.messages.length === 0) {
       updatedTitle = messageText.length > 22 ? messageText.substring(0, 20) + "..." : messageText
     }
 
-    setChatSessions(prev => prev.map(s => 
-      s.id === activeSessionId 
+    setChatSessions(prev => prev.map(s =>
+      s.id === activeSessionId
         ? { ...s, title: updatedTitle, messages: updatedMessages }
         : s
     ))
 
     setIsLlmGenerating(true)
 
-    // 2. Generate simulated RAG response
-    const ragResult = getMockRAGResponse(
-      messageText,
-      activeDocs,
-      {
-        searchMode: ragSettings.searchMode,
-        model: ragSettings.model,
-        topK: ragSettings.topK,
-        similarityThreshold: ragSettings.similarityThreshold
-      }
-    )
-
-    // Show step-by-step loading panel
-    setActiveRagProcess(ragResult)
+    // 2. Add placeholder assistant message with streaming indicator
     const assistantMsgId = `a-${Date.now()}`
-    setShowRagProcessId(assistantMsgId)
-
-    // Start with empty message and stream it
-    const assistantMessage: Message = {
+    const placeholderAssistant: Message = {
       id: assistantMsgId,
       role: "assistant",
       content: "",
       isStreaming: true,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      ragResponse: ragResult
     }
 
-    setChatSessions(prev => prev.map(s => 
-      s.id === activeSessionId 
-        ? { ...s, messages: [...updatedMessages, assistantMessage] }
+    setChatSessions(prev => prev.map(s =>
+      s.id === activeSessionId
+        ? { ...s, messages: [...updatedMessages, placeholderAssistant] }
         : s
     ))
 
-    // Stream the text output word by word
-    const textToStream = ragResult.answer
-    let currentText = ""
-    const textArray = textToStream.split(" ")
-    let wordIndex = 0
+    try {
+      // 3. Call API
+      const conversationId = currentSession.id.startsWith("new-") ? null : currentSession.id
+      const response = await chatAPI.sendMessage(messageText, conversationId, searchTool)
 
-    const streamInterval = setInterval(() => {
-      if (wordIndex < textArray.length) {
-        currentText += (wordIndex === 0 ? "" : " ") + textArray[wordIndex]
-        
-        setChatSessions(prev => prev.map(s => 
-          s.id === activeSessionId 
-            ? {
-                ...s,
-                messages: s.messages.map(m => 
-                  m.id === assistantMsgId 
-                    ? { ...m, content: currentText }
-                    : m
-                )
-              }
+      // 4. If this was a new session, update the session ID in state and activeSessionId immediately
+      const realConvId = response.conversation_id
+      if (currentSession.id.startsWith("new-")) {
+        setChatSessions(prev => prev.map(s =>
+          s.id === currentSession.id
+            ? { ...s, id: realConvId }
             : s
         ))
-        wordIndex++
-      } else {
-        clearInterval(streamInterval)
-        
-        // Finalize message status (set isStreaming to false)
-        setChatSessions(prev => prev.map(s => 
-          s.id === activeSessionId 
-            ? {
-                ...s,
-                messages: s.messages.map(m => 
-                  m.id === assistantMsgId 
-                    ? { ...m, isStreaming: false }
-                    : m
-                )
-              }
-            : s
-        ))
-        
-        setIsLlmGenerating(false)
-        addAuditLog(
-          `Chạy truy vấn RAG: "${messageText.length > 30 ? messageText.substring(0, 30) + '...' : messageText}"`,
-          "query",
-          `Model: ${ragSettings.model} | Thời gian: ${ragResult.processingTimeMs}ms | Trích dẫn: ${ragResult.citations.length}`
-        )
+        setActiveSessionId(realConvId)
       }
-    }, 45)
+
+      const preprocessedText = preprocessCitations(response.message.content, response.message.citations)
+
+      // 5. Build the real assistant message
+      const assistantMessage: Message = {
+        id: response.message.id,
+        role: "assistant",
+        content: preprocessedText,
+        isStreaming: false,
+        timestamp: new Date(response.message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        citations: response.message.citations,
+      }
+
+      // 6. Update session with real data — stream word by word for UX
+      const textToStream = preprocessedText
+      const textArray = textToStream.split(" ")
+      let wordIndex = 0
+      let currentText = ""
+
+      const targetSessionId = currentSession.id.startsWith("new-") ? realConvId : activeSessionId
+
+      const streamInterval = setInterval(() => {
+        if (wordIndex < textArray.length) {
+          currentText += (wordIndex === 0 ? "" : " ") + textArray[wordIndex]
+
+          setChatSessions(prev => prev.map(s =>
+            s.id === targetSessionId
+              ? {
+                  ...s,
+                  messages: s.messages.map(m =>
+                    m.id === assistantMsgId
+                      ? { ...m, content: currentText }
+                      : m
+                  )
+                }
+              : s
+          ))
+          wordIndex++
+        } else {
+          clearInterval(streamInterval)
+
+          // Finalize: replace placeholder with real message
+          setChatSessions(prev => prev.map(s =>
+            s.id === targetSessionId
+              ? {
+                  ...s,
+                  id: realConvId,
+                  messages: s.messages.map(m =>
+                    m.id === assistantMsgId
+                      ? { ...assistantMessage, id: assistantMsgId }
+                      : m
+                  )
+                }
+              : s
+          ))
+
+          setIsLlmGenerating(false)
+          addAuditLog(
+            `Chạy truy vấn RAG: "${messageText.length > 30 ? messageText.substring(0, 30) + '...' : messageText}"`,
+            "query",
+            `Trích dẫn: ${response.message.citations?.length || 0}`
+          )
+          refreshAuditLogs()
+        }
+      }, 30)
+
+    } catch (err) {
+      console.error("Failed to send message:", err)
+      const errorContent = err instanceof ApiError
+        ? `Lỗi từ server: ${err.detail}`
+        : "Không thể kết nối đến server. Vui lòng thử lại."
+
+      // Replace placeholder with error message
+      setChatSessions(prev => prev.map(s =>
+        s.id === activeSessionId || s.id === currentSession.id
+          ? {
+              ...s,
+              messages: s.messages.map(m =>
+                m.id === assistantMsgId
+                  ? { ...m, content: errorContent, isStreaming: false }
+                  : m
+              )
+            }
+          : s
+      ))
+      setIsLlmGenerating(false)
+    }
   }
 
+  // ============================================================
+  // Document Operations
+  // ============================================================
   const processFile = async (file: File) => {
-    if (uploadProgress?.isUploading) return;
+    if (uploadProgress?.isUploading) return
 
     setUploadProgress({
       fileName: file.name,
       progress: 0,
-      stepText: 'Đang chuẩn bị file...',
+      stepText: 'Đang chuẩn bị tải lên...',
       isUploading: true
     })
 
     try {
-      const newDoc = await simulateDocumentProcessing(
-        file.name,
-        file.size,
-        (stepIndex, stepText) => {
-          setUploadProgress(prev => {
-            if (!prev) return null;
-            const newProgress = Math.round(((stepIndex + 1) / 7) * 100);
-            return {
-              ...prev,
-              progress: newProgress,
-              stepText: stepText
-            };
-          });
-        }
-      )
+      // Step 1: Upload
+      setUploadProgress(prev => prev ? { ...prev, progress: 30, stepText: 'Đang tải file lên server...' } : null)
+      const doc = await documentsAPI.upload(file)
 
-      // Add newly indexed document to state
-      setDocuments(prev => [...prev, newDoc])
-      setActiveDocs(prev => [...prev, newDoc.id])
-      
-      // Reset upload state
-      setUploadProgress(null)
-      addAuditLog(`Đã indexing tài liệu: ${file.name}`, "upload", `Kích thước: ${(file.size / 1024).toFixed(0)} KB | Trạng thái: Sẵn sàng`)
+      // Step 2: Document is uploaded, backend processes it
+      setUploadProgress(prev => prev ? { ...prev, progress: 60, stepText: 'Đã tải lên — đang chờ backend xử lý...' } : null)
+
+      // Add document to local state immediately
+      setDocuments(prev => [...prev, doc])
+
+      // Step 3: Poll for indexing completion
+      if (doc.status === "pending" || doc.status === "processing") {
+        setUploadProgress(prev => prev ? { ...prev, progress: 70, stepText: 'Đang chờ indexing hoàn tất...' } : null)
+
+        let attempts = 0
+        const maxAttempts = 60 // 3 min max
+        const pollInterval = setInterval(async () => {
+          attempts++
+          try {
+            const updated = await documentsAPI.getById(doc.id)
+            setDocuments(prev => prev.map(d => d.id === doc.id ? updated : d))
+
+            if (updated.status === "indexed") {
+              clearInterval(pollInterval)
+              setActiveDocs(prev => [...prev, doc.id])
+              setUploadProgress(null)
+              addAuditLog(`Đã indexing tài liệu: ${file.name}`, "upload", `Kích thước: ${(file.size / 1024).toFixed(0)} KB | Trạng thái: Sẵn sàng`)
+              refreshAuditLogs()
+            } else if (updated.status === "failed" || attempts >= maxAttempts) {
+              clearInterval(pollInterval)
+              setUploadProgress({
+                fileName: file.name,
+                progress: 100,
+                stepText: updated.status === "failed" ? 'Indexing thất bại!' : 'Hết thời gian chờ indexing!',
+                isUploading: false
+              })
+              setTimeout(() => setUploadProgress(null), 3000)
+              addAuditLog(`Lỗi xử lý tài liệu: ${file.name}`, "upload", `Trạng thái: ${updated.status}`)
+            } else {
+              const progressVal = 70 + Math.min(25, attempts * 2)
+              setUploadProgress(prev => prev ? { ...prev, progress: progressVal, stepText: `Đang xử lý... (${updated.status})` } : null)
+            }
+          } catch {
+            // Ignore polling errors, keep trying
+          }
+        }, 3000)
+      } else if (doc.status === "indexed") {
+        // Already indexed instantly
+        setActiveDocs(prev => [...prev, doc.id])
+        setUploadProgress(null)
+        addAuditLog(`Đã indexing tài liệu: ${file.name}`, "upload", `Kích thước: ${(file.size / 1024).toFixed(0)} KB | Trạng thái: Sẵn sàng`)
+        refreshAuditLogs()
+      }
+
     } catch (err) {
-      console.error(err)
+      console.error("Upload failed:", err)
+      const errorMsg = err instanceof ApiError ? err.detail : 'Lỗi trong quá trình tải lên!'
       setUploadProgress({
         fileName: file.name,
         progress: 100,
-        stepText: 'Lỗi trong quá trình xử lý tài liệu!',
+        stepText: errorMsg,
         isUploading: false
       })
       setTimeout(() => setUploadProgress(null), 3000)
-      addAuditLog(`Lỗi xử lý tài liệu: ${file.name}`, "upload", "Quá trình indexing thất bại.")
+      addAuditLog(`Lỗi tải lên tài liệu: ${file.name}`, "upload", errorMsg)
+    }
+  }
+
+  const deleteDocument = async (docId: string) => {
+    try {
+      await documentsAPI.delete(docId)
+      setDocuments(prev => prev.filter(d => d.id !== docId))
+      setActiveDocs(prev => prev.filter(id => id !== docId))
+      const docName = documents.find(d => d.id === docId)?.name || docId
+      addAuditLog(`Đã xóa tài liệu: ${docName}`, "upload")
+      refreshAuditLogs()
+    } catch (err) {
+      console.error("Failed to delete document:", err)
+    }
+  }
+
+  const reindexDocument = async (docId: string) => {
+    try {
+      const updated = await documentsAPI.reindex(docId)
+      setDocuments(prev => prev.map(d => d.id === docId ? updated : d))
+      addAuditLog(`Đã yêu cầu reindex tài liệu: ${docId}`, "upload")
+      refreshAuditLogs()
+    } catch (err) {
+      console.error("Failed to reindex document:", err)
     }
   }
 
@@ -581,7 +743,51 @@ Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã h�
       const lastModel = customModels[customModels.length - 1]
       addAuditLog(`Đã thêm Custom Model: ${lastModel.name}`, "config", `API Key kết thúc bằng ...${lastModel.apiKey.slice(-4) || 'None'}`)
     }
-  }, [customModels])
+  }, [customModels, addAuditLog])
+
+  // ============================================================
+  // Auto-logout after 5 minutes of inactivity
+  // ============================================================
+  useEffect(() => {
+    if (!user) return
+
+    let timeoutId: NodeJS.Timeout
+
+    const resetTimer = () => {
+      if (timeoutId) clearTimeout(timeoutId)
+      
+      timeoutId = setTimeout(() => {
+        addAuditLog("Đã tự động đăng xuất do không hoạt động trong 30 phút", "config")
+        logout()
+      }, 30 * 60 * 1000) // 30 minutes in milliseconds
+    }
+
+    // Events to track user activity
+    const events = [
+      "mousemove",
+      "keydown",
+      "mousedown",
+      "click",
+      "scroll",
+      "touchstart"
+    ]
+
+    // Initialize timer
+    resetTimer()
+
+    // Attach listeners
+    events.forEach(event => {
+      window.addEventListener(event, resetTimer)
+    })
+
+    // Cleanup on unmount or user change
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId)
+      events.forEach(event => {
+        window.removeEventListener(event, resetTimer)
+      })
+    }
+  }, [user, logout, addAuditLog])
 
   return (
     <AppContext.Provider value={{
@@ -615,15 +821,20 @@ Ngoài ra, người đại diện theo pháp luật của doanh nghiệp xã h�
       handleSendMessage,
       isLlmGenerating,
       setIsLlmGenerating,
-      activeRagProcess,
-      setActiveRagProcess,
       showRagProcessId,
       setShowRagProcessId,
       processFile,
+      deleteDocument,
+      reindexDocument,
+      loadConversation,
       user,
+      isAuthLoading,
       login,
       register,
-      logout
+      logout,
+      refreshDocuments,
+      refreshChatHistory,
+      refreshAuditLogs,
     }}>
       {children}
     </AppContext.Provider>

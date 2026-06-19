@@ -22,29 +22,24 @@ export default function LoginPage() {
     setError(null)
     setIsLoading(true)
 
-    // Add a tiny delay to simulate a network request for a more realistic feel
-    setTimeout(async () => {
-      const res = await login(email, password)
-      setIsLoading(false)
-      if (!res.success) {
-        setError(res.error || "Có lỗi xảy ra!")
-      }
-    }, 800)
+    const res = await login(email, password)
+    setIsLoading(false)
+    if (!res.success) {
+      setError(res.error || "Có lỗi xảy ra!")
+    }
   }
 
-  const handleQuickLogin = () => {
+  const handleQuickLogin = async () => {
     setEmail("admin@enterprise.com")
     setPassword("admin123")
     setError(null)
     setIsLoading(true)
 
-    setTimeout(async () => {
-      const res = await login("admin@enterprise.com", "admin123")
-      setIsLoading(false)
-      if (!res.success) {
-        setError(res.error || "Có lỗi xảy ra!")
-      }
-    }, 500)
+    const res = await login("admin@enterprise.com", "admin123")
+    setIsLoading(false)
+    if (!res.success) {
+      setError(res.error || "Có lỗi xảy ra!")
+    }
   }
 
   return (
@@ -60,7 +55,7 @@ export default function LoginPage() {
             Knowledge RAG
           </h2>
           <p className="text-xs text-neutral-500">
-            Hệ thống Tra cứu & Phân tích Pháp lý AI Doanh nghiệp
+            Hệ thống Tra cứu &amp; Phân tích Pháp lý AI Doanh nghiệp
           </p>
         </div>
 
@@ -145,21 +140,19 @@ export default function LoginPage() {
                 </>
               )}
             </button>
-          </form>
 
-          {/* Quick Login Button */}
-          <div className="pt-4 border-t border-white/[0.04] text-center space-y-2.5">
-            <div className="text-[10px] text-neutral-500 uppercase tracking-wider">Hoặc sử dụng tài khoản kiểm thử</div>
+            {/* Quick Admin Login Option */}
             <button
               type="button"
               onClick={handleQuickLogin}
               disabled={isLoading}
-              className="w-full py-2 px-4 rounded-xl border border-white/[0.06] bg-white/[0.01] hover:bg-white/[0.04] text-neutral-300 text-xs font-medium transition-all cursor-pointer hover:border-white/[0.1]"
+              className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold tracking-wide border border-emerald-500/20 text-emerald-400 bg-emerald-500/[0.02] hover:bg-emerald-500/[0.06] transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
-              Đăng nhập nhanh bằng 1 click
+              <Zap className="w-3.5 h-3.5 text-emerald-400" />
+              Đăng nhập nhanh (Admin)
             </button>
-          </div>
-
+          </form>
+          
           {/* Footer Card */}
           <div className="text-center text-[12px] text-neutral-500">
             Chưa có tài khoản?{" "}

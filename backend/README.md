@@ -171,10 +171,16 @@ uv run celery -A app.workers.celery_app flower --port=5555
 
 | Method | Endpoint | Mô tả |
 |---|---|---|
-| `POST` | `/api/v1/chat` | Truy vấn RAG (body: `{message, conversation_id?}`) |
+| `POST` | `/api/v1/chat` | Truy vấn RAG (body: `{message, conversation_id?, search_tool?}`) |
 | `GET` | `/api/v1/chat/history` | Danh sách hội thoại |
 | `GET` | `/api/v1/chat/{id}` | Chi tiết hội thoại + messages |
 | `DELETE` | `/api/v1/chat/{id}` | Xóa hội thoại |
+
+#### Fallback Web Search & Lưu trữ tài liệu
+- **Web Search Fallback**: Khi không tìm thấy thông tin phù hợp trong kho tài liệu nội bộ:
+  - Nếu `search_tool: false` (hoặc không truyền): Phản hồi mặc định là `"Không tìm thấy trong tài liệu."`.
+  - Nếu `search_tool: true`: Kích hoạt tìm kiếm Internet (qua DuckDuckGo), trả về câu trả lời kèm nhãn cảnh báo minh bạch ở đầu: `"Câu trả lời này được tổng hợp từ Internet, không nằm trong tài liệu nội bộ của công ty..."`.
+- **Cơ chế lưu trữ Citations**: Trích dẫn (cả RAG và Web) được tuần tự hóa dạng JSON ẩn (`<!--citations:[...]-->`) lưu trong cột nội dung tin nhắn. Khi tải lại lịch sử hội thoại, các tài liệu trích dẫn sẽ được khôi phục nguyên vẹn và hiển thị đúng trên giao diện mà không cần sửa đổi Schema DB.
 
 ### Documents
 

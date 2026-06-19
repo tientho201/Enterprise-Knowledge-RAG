@@ -3,11 +3,12 @@
 import React, { useEffect, useState } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { useApp } from "@/lib/context"
+import { getAccessToken } from "@/lib/api"
 import Sidebar from "@/components/Sidebar"
 import { RefreshCw } from "lucide-react"
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { user } = useApp()
+  const { user, isAuthLoading } = useApp()
   const router = useRouter()
   const pathname = usePathname()
   const [isMounted, setIsMounted] = useState(false)
@@ -17,33 +18,33 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (!isMounted) return
+    if (!isMounted || isAuthLoading) return
 
     const isAuthPage = pathname === "/login" || pathname === "/register"
-    const storedUser = localStorage.getItem("current_rag_user")
+    const hasToken = !!getAccessToken()
 
-    if (!storedUser && !isAuthPage) {
+    if (!hasToken && !isAuthPage) {
       router.push("/login")
-    } else if (storedUser && isAuthPage) {
+    } else if (hasToken && isAuthPage) {
       router.push("/")
     }
-  }, [user, pathname, isMounted, router])
+  }, [user, pathname, isMounted, isAuthLoading, router])
 
-  // Simple loading state during mount (hydration)
-  if (!isMounted) {
+  // Simple loading state during mount (hydration) or token verification
+  if (!isMounted || isAuthLoading) {
     return (
       <div className="h-screen w-screen bg-[#0a0a0a] flex flex-col items-center justify-center text-neutral-400 gap-4">
         <RefreshCw className="w-8 h-8 animate-spin text-emerald-400/60" />
-        <div className="text-sm font-medium tracking-wide">Đang khởi động hệ thống...</div>
+        <div className="text-sm font-medium tracking-wide">Đang xác thực phiên đăng nhập...</div>
       </div>
     )
   }
 
   const isAuthPage = pathname === "/login" || pathname === "/register"
-  const storedUser = typeof window !== "undefined" ? localStorage.getItem("current_rag_user") : null
+  const hasToken = !!getAccessToken()
 
   // If not logged in and not on login/register page, show loading while redirecting
-  if (!storedUser && !isAuthPage) {
+  if (!hasToken && !isAuthPage) {
     return (
       <div className="h-screen w-screen bg-[#0a0a0a] flex flex-col items-center justify-center text-neutral-400 gap-4">
         <RefreshCw className="w-8 h-8 animate-spin text-emerald-400/60" />
@@ -53,7 +54,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   // If logged in and on login/register page, show loading while redirecting to home
-  if (storedUser && isAuthPage) {
+  if (hasToken && isAuthPage) {
     return (
       <div className="h-screen w-screen bg-[#0a0a0a] flex flex-col items-center justify-center text-neutral-400 gap-4">
         <RefreshCw className="w-8 h-8 animate-spin text-emerald-400/60" />

@@ -69,23 +69,43 @@ class HybridRetriever:
     # ── Dense ─────────────────────────────────────────────────────────────────
 
     def _dense_search(self, query_embedding: list[float]) -> list[RetrievedChunk]:
-        results = self._qdrant.search(
-            collection_name=settings.QDRANT_COLLECTION_NAME,
-            query_vector=query_embedding,
-            limit=self.dense_top_k,
-            with_payload=True,
-        )
-        return [
-            RetrievedChunk(
-                chunk_id=str(hit.id),
-                document_id=hit.payload.get("document_id", ""),
-                document_name=hit.payload.get("document_name", ""),
-                content=hit.payload.get("content", ""),
-                score=hit.score,
-                chunk_index=hit.payload.get("chunk_index", 0),
-            )
-            for hit in results
-        ]
+        import httpx
+        headers = {"Content-Type": "application/json"}
+        if settings.QDRANT_API_KEY:
+            headers["api-key"] = settings.QDRANT_API_KEY
+            
+        url = f"{settings.QDRANT_URL.rstrip('/')}/collections/{settings.QDRANT_COLLECTION_NAME}/points/search"
+        payload = {
+            "vector": query_embedding,
+            "limit": self.dense_top_k,
+            "with_payload": True,
+            "with_vector": False
+        }
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(url, json=payload, headers=headers)
+                if response.status_code != 200:
+                    import logging
+                    logging.getLogger(__name__).error(
+                        f"Qdrant search failed: status {response.status_code}, response {response.text}"
+                    )
+                    return []
+                results = response.json().get("result", [])
+                return [
+                    RetrievedChunk(
+                        chunk_id=str(hit["id"]),
+                        document_id=hit.get("payload", {}).get("document_id", "") if hit.get("payload") else "",
+                        document_name=hit.get("payload", {}).get("document_name", "") if hit.get("payload") else "",
+                        content=hit.get("payload", {}).get("content", "") if hit.get("payload") else "",
+                        score=hit.get("score", 0.0),
+                        chunk_index=hit.get("payload", {}).get("chunk_index", 0) if hit.get("payload") else 0,
+                    )
+                    for hit in results
+                ]
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("Error calling Qdrant search REST API")
+            return []
 
     # ── Graph ─────────────────────────────────────────────────────────────────
 

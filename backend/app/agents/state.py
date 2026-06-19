@@ -15,3 +15,4 @@ class AgentState(TypedDict):
     final_answer: str | None
     confidence_score: float
     retry_count: int
+    search_tool: bool | None

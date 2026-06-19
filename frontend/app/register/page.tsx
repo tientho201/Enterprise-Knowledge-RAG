@@ -25,22 +25,19 @@ export default function RegisterPage() {
       setError("Mật khẩu xác nhận không trùng khớp!")
       return
     }
-    if (password.length < 6) {
-      setError("Mật khẩu phải chứa ít nhất 6 ký tự!")
+    if (password.length < 8) {
+      setError("Mật khẩu phải chứa ít nhất 8 ký tự!")
       return
     }
 
     setError(null)
     setIsLoading(true)
 
-    // Simulation delay
-    setTimeout(async () => {
-      const res = await register(name, email, password)
-      setIsLoading(false)
-      if (!res.success) {
-        setError(res.error || "Đăng ký thất bại!")
-      }
-    }, 800)
+    const res = await register(name, email, password)
+    setIsLoading(false)
+    if (!res.success) {
+      setError(res.error || "Đăng ký thất bại!")
+    }
   }
 
   return (
@@ -56,7 +53,7 @@ export default function RegisterPage() {
             Knowledge RAG
           </h2>
           <p className="text-xs text-neutral-500">
-            Hệ thống Tra cứu & Phân tích Pháp lý AI Doanh nghiệp
+            Hệ thống Tra cứu &amp; Phân tích Pháp lý AI Doanh nghiệp
           </p>
         </div>
 
@@ -117,7 +114,7 @@ export default function RegisterPage() {
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Tối thiểu 6 ký tự"
+                  placeholder="Tối thiểu 8 ký tự"
                   className="w-full bg-white/[0.02] hover:bg-white/[0.04] border border-white/[0.06] focus:border-emerald-500/30 rounded-xl px-3.5 py-2.5 pl-10 pr-10 text-[13px] text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/5 transition-all"
                   disabled={isLoading}
                 />

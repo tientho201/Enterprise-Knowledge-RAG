@@ -38,7 +38,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useApp, CustomModel } from "@/lib/context"
-import { DocumentChunk, MockDocument } from "@/lib/mockRag"
+import { type Citation, type Document } from "@/lib/api"
 
 export default function Page() {
   const {
@@ -66,8 +66,10 @@ export default function Page() {
 
   // --- Local States for the Chat View ---
   const [inputMessage, setInputMessage] = useState<string>("")
-  const [selectedCitation, setSelectedCitation] = useState<DocumentChunk | null>(null)
+  const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null)
   const [copiedText, setCopiedText] = useState<boolean>(false)
+  const [showSearchToggle, setShowSearchToggle] = useState<boolean>(false)
+  const [searchToolEnabled, setSearchToolEnabled] = useState<boolean>(false)
   const [newModelName, setNewModelName] = useState<string>("")
   const [newModelApiKey, setNewModelApiKey] = useState<string>("")
   const [showAddModel, setShowAddModel] = useState<boolean>(false)
@@ -100,7 +102,7 @@ export default function Page() {
 
   const handleSend = () => {
     if (!inputMessage.trim()) return
-    handleSendMessage(inputMessage)
+    handleSendMessage(inputMessage, searchToolEnabled)
     setInputMessage("")
   }
 
@@ -128,29 +130,17 @@ export default function Page() {
   }
 
   const handleCitationClick = (citationId: string) => {
-    let foundChunk: DocumentChunk | undefined;
+    let foundCitation: Citation | undefined;
     
     activeSession.messages.forEach(m => {
-      if (m.ragResponse?.citations) {
-        const match = m.ragResponse.citations.find(c => c.id === citationId)
-        if (match) foundChunk = match;
+      if (m.citations) {
+        const match = m.citations.find(c => c.chunk_id === citationId)
+        if (match) foundCitation = match;
       }
     });
 
-    if (!foundChunk) {
-      documents.forEach(d => {
-        const match = d.chunks.find(c => c.id === citationId)
-        if (match) {
-          foundChunk = {
-            ...match,
-            score: 0.95
-          }
-        }
-      });
-    }
-
-    if (foundChunk) {
-      setSelectedCitation(foundChunk)
+    if (foundCitation) {
+      setSelectedCitation(foundCitation)
     }
   }
 
@@ -158,9 +148,13 @@ export default function Page() {
   const renderMessageContent = (content: string) => {
     if (!content) return null;
 
-    const lines = content.split('\n');
+    const disclaimerText = "Câu trả lời này được tổng hợp từ Internet, không nằm trong tài liệu nội bộ của công ty...";
+    const hasDisclaimer = content.startsWith(disclaimerText);
+    const cleanContent = hasDisclaimer ? content.replace(disclaimerText, "").trim() : content;
+
+    const lines = cleanContent.split('\n');
     
-    return lines.map((line, lIdx) => {
+    const renderedLines = lines.map((line, lIdx) => {
       // Handle alert blocks
       if (line.startsWith('> [!WARNING]')) {
         return (
@@ -214,6 +208,18 @@ export default function Page() {
         </p>
       );
     });
+
+    return (
+      <>
+        {hasDisclaimer && (
+          <div className="my-3 p-3.5 rounded-xl bg-amber-500/5 border border-amber-500/10 text-amber-200/80 text-[13px] flex gap-2.5 items-start animate-msg-in">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-400/70" />
+            <div className="leading-relaxed font-sans">{disclaimerText}</div>
+          </div>
+        )}
+        {renderedLines}
+      </>
+    );
   }
 
   const parseCitationsAndFormatting = (text: string) => {
@@ -398,8 +404,8 @@ export default function Page() {
                       </div>
                     </div>
 
-                    {/* RAG Pipeline Visualizer */}
-                    {isAi && message.ragResponse && (
+                    {/* Citations Panel */}
+                    {isAi && message.citations && message.citations.length > 0 && (
                       <div className="ml-10 max-w-[85%]">
                         <div className="border border-white/[0.04] bg-white/[0.01] rounded-xl overflow-hidden">
                           {/* Accordion Toggle */}
@@ -409,10 +415,7 @@ export default function Page() {
                           >
                             <span className="flex items-center gap-1.5">
                               <Database className="w-3.5 h-3.5 text-violet-400/50" />
-                              <span>RAG Pipeline {message.isStreaming ? "(Đang xử lý...)" : "(Hoàn tất)"}</span>
-                              <span className="text-[10px] font-mono text-neutral-600 bg-white/[0.03] px-1.5 py-0.5 rounded">
-                                {message.ragResponse.processingTimeMs}ms
-                              </span>
+                              <span>Nguồn tham chiếu ({message.citations.length})</span>
                             </span>
                             {showRagProcessId === message.id ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                           </button>
@@ -420,44 +423,23 @@ export default function Page() {
                           {/* Accordion Content */}
                           {showRagProcessId === message.id && (
                             <div className="p-3 border-t border-white/[0.03] space-y-3 text-[12px]">
-                              {/* Steps */}
-                              <div className="space-y-2">
-                                {message.ragResponse.steps.map((step, sIdx) => (
-                                  <div key={sIdx} className="flex items-start gap-2.5">
-                                    <div className="w-5 h-5 rounded-full bg-emerald-500/[0.06] border border-emerald-500/15 flex items-center justify-center text-[9px] text-emerald-400/70 shrink-0 mt-0.5 font-medium">
-                                      {sIdx + 1}
-                                    </div>
-                                    <div className="min-w-0 flex-1">
-                                      <div className="font-medium text-neutral-300">{step.name}</div>
-                                      {step.details && <div className="text-[10px] text-neutral-600 font-mono mt-0.5 truncate">{step.details}</div>}
-                                    </div>
-                                  </div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {message.citations.map((citation, cIdx) => (
+                                  <button
+                                    key={citation.chunk_id || cIdx}
+                                    onClick={() => setSelectedCitation(citation)}
+                                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.05] text-[11px] text-neutral-400 hover:border-white/[0.1] hover:text-neutral-200 transition-colors"
+                                  >
+                                    <FileText className="w-3 h-3 text-violet-400/50" />
+                                    <span className="max-w-[120px] truncate">{citation.document_name}</span>
+                                    {citation.section_title && (
+                                      <span className="text-[10px] text-emerald-400/60 font-mono font-semibold truncate max-w-[80px]">
+                                        {citation.section_title}
+                                      </span>
+                                    )}
+                                  </button>
                                 ))}
                               </div>
-
-                              {/* Citations */}
-                              {message.ragResponse.citations && message.ragResponse.citations.length > 0 && (
-                                <div className="pt-2.5 border-t border-white/[0.03]">
-                                  <div className="text-[10px] font-semibold text-neutral-600 mb-2 uppercase tracking-wider">
-                                    Nguồn tham chiếu
-                                  </div>
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {message.ragResponse.citations.map((citation) => (
-                                      <button
-                                        key={citation.id}
-                                        onClick={() => setSelectedCitation(citation)}
-                                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.05] text-[11px] text-neutral-400 hover:border-white/[0.1] hover:text-neutral-200 transition-colors"
-                                      >
-                                        <FileText className="w-3 h-3 text-violet-400/50" />
-                                        <span className="max-w-[120px] truncate">{citation.docName}</span>
-                                        <span className="text-[10px] text-emerald-400/60 font-mono font-semibold">
-                                          {Math.round(citation.score * 100)}%
-                                        </span>
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
                             </div>
                           )}
                         </div>
@@ -490,15 +472,51 @@ export default function Page() {
                 className="w-full bg-transparent border-0 ring-0 focus:outline-none focus:ring-0 text-[14px] text-neutral-200 px-3 py-2.5 resize-none h-[56px] placeholder:text-neutral-600"
               />
 
+              {/* Search Toggle Panel */}
+              {showSearchToggle && (
+                <div className="flex items-center justify-between px-3 py-2 bg-white/[0.01] border-t border-white/[0.03] animate-msg-in">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className={`w-3.5 h-3.5 ${searchToolEnabled ? "text-emerald-400 animate-pulse" : "text-neutral-500"}`} />
+                    <span className="text-[12px] font-medium text-neutral-300">Tìm kiếm Internet khi không tìm thấy tài liệu</span>
+                  </div>
+                  
+                  {/* Switch Toggle */}
+                  <button
+                    onClick={() => setSearchToolEnabled(!searchToolEnabled)}
+                    className={`w-9 h-5 rounded-full p-0.5 transition-all relative cursor-pointer ${
+                      searchToolEnabled ? "bg-emerald-500/80" : "bg-white/[0.08]"
+                    }`}
+                  >
+                    <div
+                      className={`w-4 h-4 rounded-full bg-white shadow-md transition-all absolute top-0.5 ${
+                        searchToolEnabled ? "left-[18px]" : "left-0.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+              )}
+
               {/* Toolbar */}
               <div className="flex items-center justify-between px-2 pt-1 border-t border-white/[0.03]">
                 <div className="flex items-center gap-1">
+                  <button 
+                    onClick={() => setShowSearchToggle(!showSearchToggle)}
+                    className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                      showSearchToggle 
+                        ? "bg-emerald-500/10 text-emerald-400" 
+                        : "text-neutral-600 hover:text-neutral-300 hover:bg-white/[0.04]"
+                    }`}
+                    title="Tìm kiếm Internet fallback"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+
                   <button 
                     onClick={() => {
                       setShowRightPanel(true)
                       setRightPanelTab("docs")
                     }}
-                    className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-300 hover:bg-white/[0.04] transition-colors"
+                    className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-300 hover:bg-white/[0.04] transition-colors cursor-pointer"
                     title="Upload / Chọn tài liệu"
                   >
                     <Paperclip className="w-4 h-4" />
@@ -598,12 +616,18 @@ export default function Page() {
                             <span className="truncate">{doc.name}</span>
                           </div>
                           <p className="text-[10px] text-neutral-600 line-clamp-1 leading-normal ml-5">
-                            {doc.description}
+                            {doc.source || `${doc.type.toUpperCase()} document`}
                           </p>
                           <div className="flex items-center gap-2 text-[9px] text-neutral-600 font-mono ml-5">
-                            <span>{doc.code}</span>
+                            <span className="uppercase">{doc.type}</span>
                             <span className="text-neutral-700">·</span>
-                            <span>{doc.size}</span>
+                            <span>
+                              {doc.file_size 
+                                ? (doc.file_size > 1024 * 1024 
+                                    ? (doc.file_size / (1024 * 1024)).toFixed(1) + " MB" 
+                                    : (doc.file_size / 1024).toFixed(0) + " KB")
+                                : "N/A"}
+                            </span>
                           </div>
                         </div>
 
@@ -954,42 +978,27 @@ export default function Page() {
               
               {/* Document Metadata */}
               <div className="glass-card p-4 rounded-xl space-y-3">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <h4 className="font-bold text-neutral-100 text-sm">{selectedCitation.docName}</h4>
-                    <p className="text-[11px] text-neutral-500 mt-0.5">
-                      {selectedCitation.docId.startsWith('upload') ? 'Do người dùng tải lên' : selectedCitation.docId === 'ldn-2020' ? '59/2020/QH14' : selectedCitation.docId === 'blds-2015' ? '91/2015/QH13' : 'QC-BM-01/2025'}
-                    </p>
-                  </div>
-                  
-                  <div className="flex flex-col items-center">
-                    <span className="text-[10px] text-neutral-500 font-medium mb-1">Trùng khớp</span>
-                    <div className="w-11 h-11 rounded-full border-2 border-emerald-500/30 flex items-center justify-center text-[12px] font-bold text-emerald-400/80 bg-emerald-500/[0.06]">
-                      {Math.round(selectedCitation.score * 100)}%
-                    </div>
-                  </div>
+                <div>
+                  <h4 className="font-bold text-neutral-100 text-sm">{selectedCitation.document_name}</h4>
+                  <p className="text-[11px] text-neutral-500 mt-0.5">
+                    Document ID: {selectedCitation.document_id}
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 pt-2.5 border-t border-white/[0.04] text-[11px] text-neutral-400">
-                  <div>
-                    <span className="text-neutral-600">Điều:</span> <span className="text-neutral-300 font-medium">{selectedCitation.article}</span>
-                  </div>
-                  {selectedCitation.clause && (
+                  {selectedCitation.section_title && (
+                    <div className="col-span-2">
+                      <span className="text-neutral-600">Mục:</span> <span className="text-neutral-300 font-medium">{selectedCitation.section_title}</span>
+                    </div>
+                  )}
+                  {selectedCitation.page_number && (
                     <div>
-                      <span className="text-neutral-600">Khoản:</span> <span className="text-neutral-300 font-medium">{selectedCitation.clause}</span>
+                      <span className="text-neutral-600">Trang:</span> <span className="text-neutral-300 font-medium">{selectedCitation.page_number}</span>
                     </div>
                   )}
                   <div className="col-span-2">
-                    <span className="text-neutral-600">Chunk ID:</span> <span className="text-neutral-300 font-mono">{selectedCitation.id}</span>
+                    <span className="text-neutral-600">Chunk ID:</span> <span className="text-neutral-300 font-mono">{selectedCitation.chunk_id}</span>
                   </div>
-                </div>
-              </div>
-
-              {/* Title */}
-              <div className="space-y-1.5">
-                <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">Tiêu đề</span>
-                <div className="font-medium text-neutral-200 text-[13px] bg-white/[0.02] px-3 py-2.5 rounded-lg border border-white/[0.04]">
-                  {selectedCitation.title}
                 </div>
               </div>
 
@@ -999,7 +1008,7 @@ export default function Page() {
                   <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">Nội dung văn bản gốc</span>
                   
                   <button 
-                    onClick={() => copyToClipboard(selectedCitation.snippet)}
+                    onClick={() => copyToClipboard(selectedCitation.content_snippet)}
                     className="flex items-center gap-1 text-[11px] text-neutral-500 hover:text-emerald-400 transition-colors"
                   >
                     {copiedText ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -1008,20 +1017,22 @@ export default function Page() {
                 </div>
                 
                 <div className="bg-white/[0.02] border border-white/[0.04] rounded-xl p-4 text-neutral-300 text-[13px] leading-relaxed whitespace-pre-wrap select-text">
-                  {selectedCitation.snippet}
+                  {selectedCitation.content_snippet}
                 </div>
               </div>
 
-              {/* AI Explanation */}
-              <div className="p-3 bg-violet-500/[0.03] border border-violet-500/[0.06] rounded-xl text-[12px] space-y-1">
-                <div className="font-medium text-violet-300/80 flex items-center gap-1">
-                  <Sparkles className="w-3.5 h-3.5 text-violet-400/50" />
-                  <span>Phân tích AI</span>
+              {/* Source link */}
+              {selectedCitation.source_link && (
+                <div className="p-3 bg-violet-500/[0.03] border border-violet-500/[0.06] rounded-xl text-[12px] space-y-1">
+                  <div className="font-medium text-violet-300/80 flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-violet-400/50" />
+                    <span>Liên kết nguồn</span>
+                  </div>
+                  <a href={selectedCitation.source_link} target="_blank" rel="noopener noreferrer" className="text-emerald-400/80 hover:text-emerald-400 underline break-all">
+                    {selectedCitation.source_link}
+                  </a>
                 </div>
-                <p className="text-neutral-400 leading-relaxed">
-                  Đoạn trích này có ngữ nghĩa tương thích cao với câu hỏi. Vector DB đã map trúng các từ khóa cốt lõi liên quan đến điều lệ quy chế để nạp vào prompt ngữ cảnh của LLM.
-                </p>
-              </div>
+              )}
 
             </div>
 
@@ -1029,7 +1040,7 @@ export default function Page() {
             <div className="p-4 border-t border-white/[0.04] flex gap-2">
               <Button
                 onClick={() => {
-                  setInputMessage(prev => prev + ` Dựa trên thông tin tại ${selectedCitation.docName} - ${selectedCitation.article}:`);
+                  setInputMessage(prev => prev + ` Dựa trên thông tin tại ${selectedCitation.document_name}${selectedCitation.section_title ? ` - ${selectedCitation.section_title}` : ''}:`);
                   setSelectedCitation(null);
                 }}
                 className="flex-1 bg-emerald-500/80 hover:bg-emerald-500 text-white text-[12px] py-2 rounded-xl font-medium border-0 cursor-pointer"

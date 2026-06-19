@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.message import MessageRole
 
@@ -20,6 +20,12 @@ class CitationSchema(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversation_id: str | None = None
+    search_tool: bool | None = Field(default=False, alias="searchTool")
+
+    model_config = {
+        "populate_by_name": True,
+        "from_attributes": True
+    }
 
 
 class MessageResponse(BaseModel):

@@ -1,51 +1,40 @@
 """
-BGE-M3 local embedder — runs on CPU/GPU, normalized output.
-Uses FlagEmbedding for dense + sparse embeddings.
+OpenAI Embeddings — replaces BGE-M3 local model.
+Uses text-embedding-3-small by default (1536 dims, cost-effective).
 """
 from functools import lru_cache
 
+from openai import OpenAI
+
 from app.core.config import settings
 
+_DIMENSIONS: dict[str, int] = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+}
 
-class BGEEmbedder:
-    """Wraps FlagEmbedding BGEM3FlagModel for batch normalized embeddings."""
 
-    def __init__(self, model_name: str = None, device: str = None, batch_size: int = None):
-        self.model_name = model_name or settings.EMBEDDING_MODEL
-        self.device = device or settings.EMBEDDING_DEVICE
+class OpenAIEmbedder:
+    """Wraps OpenAI Embeddings API with batched calls."""
+
+    def __init__(self, model: str = None, batch_size: int = None):
+        self.model = model or settings.EMBEDDING_MODEL
         self.batch_size = batch_size or settings.EMBEDDING_BATCH_SIZE
-        self._model = None
-
-    def _load_model(self):
-        if self._model is None:
-            from FlagEmbedding import BGEM3FlagModel
-            self._model = BGEM3FlagModel(
-                self.model_name,
-                use_fp16=(self.device != "cpu"),
-            )
-        return self._model
+        self._client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts in batches, return normalized dense vectors."""
-        model = self._load_model()
+        """Embed texts in batches, return vectors (already normalized by OpenAI)."""
         all_embeddings: list[list[float]] = []
 
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
-            output = model.encode(
-                batch,
-                batch_size=len(batch),
-                max_length=512,
-                return_dense=True,
-                return_sparse=False,
-                return_colbert_vecs=False,
+            response = self._client.embeddings.create(
+                model=self.model,
+                input=batch,
             )
-            dense = output["dense_vecs"]
-            # Normalize
-            import numpy as np
-            norms = np.linalg.norm(dense, axis=1, keepdims=True)
-            normalized = (dense / norms).tolist()
-            all_embeddings.extend(normalized)
+            batch_embeddings = [item.embedding for item in response.data]
+            all_embeddings.extend(batch_embeddings)
 
         return all_embeddings
 
@@ -54,10 +43,9 @@ class BGEEmbedder:
 
     @property
     def dimension(self) -> int:
-        """BGE-M3 dense embedding dimension."""
-        return 1024
+        return _DIMENSIONS.get(self.model, 1536)
 
 
 @lru_cache
-def get_embedder() -> BGEEmbedder:
-    return BGEEmbedder()
+def get_embedder() -> OpenAIEmbedder:
+    return OpenAIEmbedder()

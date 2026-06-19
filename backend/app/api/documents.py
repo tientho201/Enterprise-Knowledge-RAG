@@ -8,9 +8,9 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 
 @router.post("/upload", response_model=DocumentResponse, status_code=202)
-async def upload_document(file: UploadFile, _user_id: CurrentUserIdDep, db: DbDep):
+async def upload_document(file: UploadFile, user_id: CurrentUserIdDep, db: DbDep):
     service = DocumentService(db)
-    return await service.upload(file)
+    return await service.upload(file, user_id=user_id)
 
 
 @router.get("", response_model=DocumentListResponse)
@@ -31,12 +31,12 @@ async def get_document(doc_id: str, _user_id: CurrentUserIdDep, db: DbDep):
 
 
 @router.delete("/{doc_id}", status_code=204)
-async def delete_document(doc_id: str, _user_id: CurrentUserIdDep, db: DbDep):
+async def delete_document(doc_id: str, user_id: CurrentUserIdDep, db: DbDep):
     service = DocumentService(db)
-    await service.delete(doc_id)
+    await service.delete(doc_id, user_id=user_id)
 
 
 @router.post("/reindex", response_model=DocumentResponse)
-async def reindex_document(body: ReindexRequest, _user_id: CurrentUserIdDep, db: DbDep):
+async def reindex_document(body: ReindexRequest, user_id: CurrentUserIdDep, db: DbDep):
     service = DocumentService(db)
-    return await service.reindex(body.document_id)
+    return await service.reindex(body.document_id, user_id=user_id)

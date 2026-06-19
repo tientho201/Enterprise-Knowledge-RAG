@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, chat, documents, admin
+from app.api import auth, chat, documents, admin, audit_logs
 from app.core.config import settings
 
 logging.basicConfig(
@@ -44,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix=settings.API_V1_PREFIX)
     app.include_router(documents.router, prefix=settings.API_V1_PREFIX)
     app.include_router(admin.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(audit_logs.router, prefix=settings.API_V1_PREFIX)
 
     @app.get("/health", tags=["health"])
     async def health_check():
