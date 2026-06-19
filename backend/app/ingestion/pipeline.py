@@ -1,6 +1,6 @@
 """
 Ingestion pipeline:
-Upload → Store (MinIO) → Extract text → Chunk → Embed → Save (Qdrant + DB)
+Upload → Store (S3) → Extract text → Chunk → Embed → Save (Qdrant + DB + Neo4j)
 """
 import io
 import uuid
@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.ingestion.chunker import DocumentChunker
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.repositories.document_repo import DocumentRepository
-from app.storage.minio_client import get_minio_client
+from app.storage.s3_client import get_s3_client
 
 CONTENT_TYPE_MAP = {
     "application/pdf": DocumentType.pdf,
@@ -55,15 +55,15 @@ async def run_ingestion_pipeline(
     Full ingestion pipeline — called by the Celery task after upload.
     Returns the Document record.
     """
-    minio = get_minio_client()
+    s3 = get_s3_client()
     doc_repo = DocumentRepository(db)
     chunker = DocumentChunker()
 
     doc_type = detect_doc_type(filename, content_type)
     object_name = f"{uuid.uuid4()}/{filename}"
 
-    # Store raw file in MinIO
-    minio.upload_bytes(object_name, file_bytes, content_type=content_type)
+    # Store raw file in S3
+    s3.upload_bytes(object_name, file_bytes, content_type=content_type)
 
     # Create DB record
     doc = await doc_repo.create(
@@ -143,6 +143,31 @@ async def run_ingestion_pipeline(
         # Save chunks to DB
         db.add_all(chunk_records)
         await db.flush()
+
+        # Index into Neo4j knowledge graph (best-effort — failure does not abort ingestion)
+        try:
+            from app.ingestion.graph_indexer import ChunkRecord, index_chunks_to_graph
+            from app.rag.graph_client import get_neo4j_driver
+
+            graph_chunks = [
+                ChunkRecord(
+                    chunk_id=str(p.id),
+                    content=p.payload["content"],
+                    chunk_index=p.payload["chunk_index"],
+                )
+                for p in points
+            ]
+            index_chunks_to_graph(
+                driver=get_neo4j_driver(),
+                document_id=doc.id,
+                document_name=filename,
+                chunks=graph_chunks,
+            )
+        except Exception as graph_exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "Neo4j indexing skipped for document %s: %s", doc.id, graph_exc
+            )
 
         await doc_repo.update_status(doc.id, DocumentStatus.indexed)
 

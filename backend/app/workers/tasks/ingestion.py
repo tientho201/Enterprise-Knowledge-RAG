@@ -37,10 +37,10 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
         from app.models.document import DocumentStatus
         from app.rag.retriever import get_qdrant_client
         from app.repositories.document_repo import DocumentRepository
-        from app.storage.minio_client import get_minio_client
+        from app.storage.s3_client import get_s3_client
 
-        minio = get_minio_client()
-        file_bytes = minio.download_file(storage_path)
+        s3 = get_s3_client()
+        file_bytes = s3.download_file(storage_path)
 
         async def _run():
             async with AsyncSessionLocal() as db:
@@ -100,6 +100,31 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
 
                 qdrant.upsert(collection_name=settings.QDRANT_COLLECTION_NAME, points=points)
                 db.add_all(chunk_records)
+
+                # Index into Neo4j knowledge graph (best-effort)
+                try:
+                    from app.ingestion.graph_indexer import ChunkRecord, index_chunks_to_graph
+                    from app.rag.graph_client import get_neo4j_driver
+
+                    graph_chunks = [
+                        ChunkRecord(
+                            chunk_id=str(p.id),
+                            content=p.payload["content"],
+                            chunk_index=p.payload["chunk_index"],
+                        )
+                        for p in points
+                    ]
+                    index_chunks_to_graph(
+                        driver=get_neo4j_driver(),
+                        document_id=document_id,
+                        document_name=doc.name,
+                        chunks=graph_chunks,
+                    )
+                except Exception as graph_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Neo4j indexing skipped for document %s: %s", document_id, graph_exc
+                    )
+
                 await doc_repo.update_status(document_id, DocumentStatus.indexed)
                 await db.commit()
 
@@ -119,13 +144,14 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
     retry_backoff=True,
 )
 def delete_document_vectors(self, document_id: str) -> dict:
-    """Remove all vectors for a document from Qdrant."""
+    """Remove all vectors (Qdrant) and graph nodes (Neo4j) for a document."""
     try:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
         from app.core.config import settings
         from app.rag.retriever import get_qdrant_client
 
+        # Delete from Qdrant
         qdrant = get_qdrant_client()
         qdrant.delete(
             collection_name=settings.QDRANT_COLLECTION_NAME,
@@ -133,6 +159,18 @@ def delete_document_vectors(self, document_id: str) -> dict:
                 must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
             ),
         )
+
+        # Delete from Neo4j (best-effort)
+        try:
+            from app.ingestion.graph_indexer import delete_document_from_graph
+            from app.rag.graph_client import get_neo4j_driver
+
+            delete_document_from_graph(get_neo4j_driver(), document_id)
+        except Exception as graph_exc:  # noqa: BLE001
+            logger.warning(
+                "Neo4j delete skipped for document %s: %s", document_id, graph_exc
+            )
+
         return {"document_id": document_id, "status": "vectors_deleted"}
     except Exception as exc:
         raise self.retry(exc=exc)

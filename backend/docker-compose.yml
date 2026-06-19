@@ -1,12 +1,13 @@
 version: "3.9"
 
-# PostgreSQL và Qdrant đã chuyển lên cloud:
-#   - PostgreSQL → Supabase (https://supabase.com)
-#   - Qdrant     → Qdrant Cloud (https://cloud.qdrant.io)
+# Cloud services (không cần chạy local):
+#   - PostgreSQL  → Supabase (https://supabase.com)
+#   - Qdrant      → Qdrant Cloud (https://cloud.qdrant.io)
 #
-# File này chỉ còn chạy các service local:
-#   - Redis (Celery broker + cache)
-#   - MinIO (object storage)
+# File này chạy các service local:
+#   - Redis      (Celery broker + cache)
+#   - Neo4j      (knowledge graph — legal cross-reference retrieval)
+#   - LocalStack (AWS S3 local — thay thế MinIO)
 
 services:
   redis:
@@ -22,24 +23,46 @@ services:
       timeout: 5s
       retries: 5
 
-  minio:
-    image: minio/minio:latest
-    container_name: rag_minio
-    command: server /data --console-address ":9001"
+  neo4j:
+    image: neo4j:5-community
+    container_name: rag_neo4j
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      NEO4J_AUTH: neo4j/neo4j_password
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "7474:7474"   # Neo4j Browser (HTTP)
+      - "7687:7687"   # Bolt protocol
     volumes:
-      - minio_data:/data
+      - neo4j_data:/data
+      - neo4j_logs:/logs
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "neo4j", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  localstack:
+    image: localstack/localstack:3
+    container_name: rag_localstack
+    ports:
+      - "4566:4566"       # LocalStack Gateway (S3 + tất cả AWS services)
+    environment:
+      SERVICES: s3
+      DEFAULT_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      PERSISTENCE: 1      # giữ data qua restart
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 10s
       timeout: 5s
       retries: 5
 
 volumes:
   redis_data:
-  minio_data:
+  neo4j_data:
+  neo4j_logs:
+  localstack_data:

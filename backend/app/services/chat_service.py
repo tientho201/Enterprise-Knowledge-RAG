@@ -40,7 +40,7 @@ class ChatService:
             "intent": "",
             "rewritten_query": None,
             "dense_results": [],
-            "sparse_results": [],
+            "graph_results": [],
             "merged_results": [],
             "reranked_results": [],
             "citations": [],
@@ -49,7 +49,7 @@ class ChatService:
             "retry_count": 0,
         }
         final_state = await graph.ainvoke(initial_state)
-        answer = final_state.get("final_answer") or "I'm sorry, I couldn't generate a response."
+        answer = final_state.get("final_answer") or "Xin lỗi, tôi không thể tìm thấy thông tin liên quan trong tài liệu."
         citations = final_state.get("citations", [])
 
         # Save assistant message
@@ -72,7 +72,7 @@ class ChatService:
                 role=assistant_msg.role,
                 content=assistant_msg.content,
                 created_at=assistant_msg.created_at,
-                citations=[],
+                citations=citations,
             ),
         )
 

@@ -1,6 +1,16 @@
 """
-Hybrid retrieval: Dense (Qdrant) + Sparse (BM25) with weighted merge.
-Dense weight: 0.7, Sparse weight: 0.3
+Hybrid retrieval: Dense (Qdrant) + Graph (Neo4j) with weighted merge.
+
+Dense weight : 0.7  — cosine similarity from Qdrant vector search
+Graph weight : 0.3  — knowledge-graph expansion via Neo4j
+
+Graph search starts from the dense seed chunks and expands through:
+  • NEXT_CHUNK  — adjacent chunks in the same document (context window)
+  • REFERENCES  — chunks that are cross-referenced by a seed chunk's text
+                  (e.g. "theo quy định tại Điều 5")
+
+Graceful degradation: if Neo4j is unavailable the pipeline falls back to
+dense-only mode without raising an exception.
 """
 from dataclasses import dataclass
 from functools import lru_cache
@@ -23,9 +33,9 @@ class RetrievedChunk:
 @lru_cache
 def get_qdrant_client() -> QdrantClient:
     """
-    Tạo Qdrant client:
-    - Nếu QDRANT_API_KEY được set → kết nối Qdrant Cloud qua QDRANT_URL
-    - Ngược lại → kết nối local (development)
+    Return a cached Qdrant client.
+    - QDRANT_API_KEY set  → Qdrant Cloud via QDRANT_URL
+    - otherwise          → local / self-hosted
     """
     if settings.QDRANT_API_KEY:
         return QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
@@ -34,22 +44,29 @@ def get_qdrant_client() -> QdrantClient:
 
 class HybridRetriever:
     """
-    Combines dense (Qdrant cosine similarity) and sparse (BM25) retrieval.
-    Scores are merged: final = dense_weight * dense_score + sparse_weight * bm25_score
+    Two-stage retrieval:
+
+    1. Dense  — Qdrant ANN search returns top-K semantically similar chunks.
+    2. Graph  — Neo4j BFS from the dense seeds expands the result set with
+                contextually related chunks (next/prev chunks, referenced articles).
+
+    Final score = dense_weight * norm_dense + graph_weight * graph_score
     """
 
     def __init__(
         self,
-        dense_top_k: int = None,
-        sparse_top_k: int = None,
-        dense_weight: float = None,
-        sparse_weight: float = None,
+        dense_top_k: int | None = None,
+        graph_top_k: int | None = None,
+        dense_weight: float | None = None,
+        graph_weight: float | None = None,
     ):
         self.dense_top_k = dense_top_k or settings.DENSE_TOP_K
-        self.sparse_top_k = sparse_top_k or settings.SPARSE_TOP_K
+        self.graph_top_k = graph_top_k or settings.GRAPH_TOP_K
         self.dense_weight = dense_weight or settings.DENSE_WEIGHT
-        self.sparse_weight = sparse_weight or settings.SPARSE_WEIGHT
+        self.graph_weight = graph_weight or settings.GRAPH_WEIGHT
         self._qdrant = get_qdrant_client()
+
+    # ── Dense ─────────────────────────────────────────────────────────────────
 
     def _dense_search(self, query_embedding: list[float]) -> list[RetrievedChunk]:
         results = self._qdrant.search(
@@ -70,33 +87,106 @@ class HybridRetriever:
             for hit in results
         ]
 
-    def _bm25_search(self, query: str, corpus: list[RetrievedChunk]) -> dict[str, float]:
-        """BM25 re-scoring over dense results corpus."""
-        if not corpus:
+    # ── Graph ─────────────────────────────────────────────────────────────────
+
+    def _graph_search(
+        self, seed_ids: list[str]
+    ) -> dict[str, tuple[RetrievedChunk, float]]:
+        """
+        Expand seed chunks through the Neo4j knowledge graph.
+
+        Cypher traversal (depth ≤ 2) follows NEXT_CHUNK and REFERENCES edges
+        and returns chunks *not* already in the dense seed set.
+
+        Returns: {chunk_id: (RetrievedChunk, normalized_score)}
+        Graph score = connection_count / max_connection_count  ∈ [0, 1]
+
+        Falls back to {} on any Neo4j error (connection refused, timeout, etc.).
+        """
+        if not seed_ids:
             return {}
-        from rank_bm25 import BM25Okapi
-        tokenized_corpus = [c.content.lower().split() for c in corpus]
-        bm25 = BM25Okapi(tokenized_corpus)
-        scores = bm25.get_scores(query.lower().split())
-        max_score = max(scores) if max(scores) > 0 else 1.0
-        return {corpus[i].chunk_id: scores[i] / max_score for i in range(len(corpus))}
+
+        try:
+            from app.rag.graph_client import get_neo4j_driver
+
+            driver = get_neo4j_driver()
+            with driver.session() as session:
+                result = session.run(
+                    """
+                    UNWIND $seed_ids AS sid
+                    MATCH (seed:Chunk {chunk_id: sid})
+                    MATCH (seed)-[:NEXT_CHUNK|REFERENCES*1..2]-(related:Chunk)
+                    WHERE NOT related.chunk_id IN $seed_ids
+                    RETURN
+                        related.chunk_id       AS chunk_id,
+                        related.document_id    AS document_id,
+                        related.document_name  AS document_name,
+                        related.content        AS content,
+                        related.chunk_index    AS chunk_index,
+                        count(seed)            AS connections
+                    ORDER BY connections DESC
+                    LIMIT $limit
+                    """,
+                    seed_ids=seed_ids,
+                    limit=self.graph_top_k,
+                )
+                records = result.data()
+
+            if not records:
+                return {}
+
+            max_conn = max(r["connections"] for r in records) or 1
+            graph_results: dict[str, tuple[RetrievedChunk, float]] = {}
+            for r in records:
+                norm_score = r["connections"] / max_conn
+                chunk = RetrievedChunk(
+                    chunk_id=r["chunk_id"],
+                    document_id=r["document_id"],
+                    document_name=r["document_name"],
+                    content=r["content"],
+                    score=norm_score,
+                    chunk_index=r["chunk_index"],
+                )
+                graph_results[r["chunk_id"]] = (chunk, norm_score)
+
+            return graph_results
+
+        except Exception:  # Neo4j unavailable → graceful degradation
+            return {}
+
+    # ── Merge & rank ──────────────────────────────────────────────────────────
 
     def retrieve(self, query: str, query_embedding: list[float]) -> list[RetrievedChunk]:
+        """
+        Run hybrid retrieval and return chunks sorted by descending hybrid score.
+
+        Args:
+            query:           Raw user query string (unused post-dense but kept for
+                             compatibility with future sparse/keyword augmentation).
+            query_embedding: Pre-computed dense embedding of the query.
+        """
         dense_results = self._dense_search(query_embedding)
         if not dense_results:
             return []
 
-        bm25_scores = self._bm25_search(query, dense_results)
+        seed_ids = [r.chunk_id for r in dense_results]
+        graph_results = self._graph_search(seed_ids)
 
-        # Normalize dense scores to [0,1]
         max_dense = max(r.score for r in dense_results) or 1.0
 
         merged: dict[str, RetrievedChunk] = {}
+
+        # Score dense results with optional graph boost
         for chunk in dense_results:
             norm_dense = chunk.score / max_dense
-            norm_bm25 = bm25_scores.get(chunk.chunk_id, 0.0)
-            hybrid_score = self.dense_weight * norm_dense + self.sparse_weight * norm_bm25
-            chunk.score = hybrid_score
+            _, graph_score = graph_results.get(chunk.chunk_id, (None, 0.0))
+            chunk.score = self.dense_weight * norm_dense + self.graph_weight * graph_score
             merged[chunk.chunk_id] = chunk
+
+        # Add graph-only chunks (not returned by dense search)
+        for chunk_id, (chunk, graph_score) in graph_results.items():
+            if chunk_id not in merged:
+                chunk.score = self.graph_weight * graph_score
+                merged[chunk_id] = chunk
 
         return sorted(merged.values(), key=lambda x: x.score, reverse=True)

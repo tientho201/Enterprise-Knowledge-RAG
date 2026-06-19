@@ -1,4 +1,4 @@
-"""E2E tests require running infrastructure (MinIO, PostgreSQL, Qdrant)."""
+"""E2E tests require running infrastructure (LocalStack S3, PostgreSQL, Qdrant)."""
 import pytest
 
 

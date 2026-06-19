@@ -39,12 +39,14 @@ class Settings(BaseSettings):
     QDRANT_API_KEY: str = ""
     QDRANT_COLLECTION_NAME: str = "enterprise_knowledge"
 
-    # MinIO
-    MINIO_ENDPOINT: str = "localhost:9000"
-    MINIO_ACCESS_KEY: str = "minioadmin"
-    MINIO_SECRET_KEY: str = "minioadmin"
-    MINIO_BUCKET_NAME: str = "documents"
-    MINIO_SECURE: bool = False
+    # AWS S3 / LocalStack
+    # Local dev: LocalStack tại http://localhost:4566 (AWS_S3_ENDPOINT_URL phải được set)
+    # Production: để trống AWS_S3_ENDPOINT_URL → dùng AWS S3 thật
+    AWS_ACCESS_KEY_ID: str = "test"
+    AWS_SECRET_ACCESS_KEY: str = "test"
+    AWS_REGION: str = "us-east-1"
+    AWS_S3_BUCKET_NAME: str = "documents"
+    AWS_S3_ENDPOINT_URL: str = "http://localhost:4566"  # để trống khi dùng AWS S3 thật
 
     # OpenAI
     OPENAI_API_KEY: str = ""
@@ -71,12 +73,17 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 200
 
+    # Neo4j (Knowledge Graph — replaces BM25 sparse search)
+    NEO4J_URI: str = "bolt://localhost:7687"
+    NEO4J_USER: str = "neo4j"
+    NEO4J_PASSWORD: str = "neo4j"
+
     # Retrieval
     DENSE_TOP_K: int = 20
-    SPARSE_TOP_K: int = 20
+    GRAPH_TOP_K: int = 20       # max graph-expanded chunks per query
     RERANK_TOP_K: int = 5
     DENSE_WEIGHT: float = 0.7
-    SPARSE_WEIGHT: float = 0.3
+    GRAPH_WEIGHT: float = 0.3   # formerly SPARSE_WEIGHT
 
     # CORS
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.document import DocumentType
 from app.repositories.document_repo import DocumentRepository
 from app.schemas.document import DocumentListResponse, DocumentResponse
-from app.storage.minio_client import get_minio_client
+from app.storage.s3_client import get_s3_client
 
 ALLOWED_CONTENT_TYPES = {
     "application/pdf": DocumentType.pdf,
@@ -36,9 +36,9 @@ class DocumentService:
                 detail="File exceeds 50 MB limit",
             )
 
-        minio = get_minio_client()
+        s3 = get_s3_client()
         object_name = f"{uuid.uuid4()}/{file.filename}"
-        minio.upload_bytes(object_name, file_bytes, content_type=file.content_type)
+        s3.upload_bytes(object_name, file_bytes, content_type=file.content_type)
 
         doc_type = ALLOWED_CONTENT_TYPES[file.content_type]
         doc = await self.repo.create(
