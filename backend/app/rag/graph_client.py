@@ -4,6 +4,7 @@ Neo4j driver — singleton via lru_cache.
 Supports graceful degradation: if Neo4j is unreachable, retrieval falls back
 to dense-only mode (graph_weight is effectively ignored).
 """
+
 import logging
 from functools import lru_cache
 
@@ -35,8 +36,5 @@ def ensure_graph_schema(driver: Driver) -> None:
             "CREATE CONSTRAINT chunk_id_unique IF NOT EXISTS "
             "FOR (c:Chunk) REQUIRE c.chunk_id IS UNIQUE"
         )
-        session.run(
-            "CREATE INDEX chunk_document_id IF NOT EXISTS "
-            "FOR (c:Chunk) ON (c.document_id)"
-        )
+        session.run("CREATE INDEX chunk_document_id IF NOT EXISTS FOR (c:Chunk) ON (c.document_id)")
     logger.info("Neo4j graph schema verified.")

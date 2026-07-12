@@ -1,4 +1,5 @@
 """vLLM LLM implementation — Phase 2 (local Llama-3 inference)."""
+
 from collections.abc import AsyncIterator
 
 import httpx
@@ -9,7 +10,11 @@ from app.llm.base import BaseLLM
 class VLLMLLM(BaseLLM):
     """Connects to a running vLLM OpenAI-compatible server."""
 
-    def __init__(self, base_url: str = "http://localhost:8001/v1", model: str = "meta-llama/Meta-Llama-3-8B-Instruct"):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8001/v1",
+        model: str = "meta-llama/Meta-Llama-3-8B-Instruct",
+    ):
         self.base_url = base_url
         self.model = model
         self.client = httpx.AsyncClient(base_url=base_url, timeout=120.0)
@@ -52,6 +57,7 @@ class VLLMLLM(BaseLLM):
             async for line in response.aiter_lines():
                 if line.startswith("data: ") and line != "data: [DONE]":
                     import json
+
                     data = json.loads(line[6:])
                     delta = data["choices"][0]["delta"].get("content", "")
                     if delta:

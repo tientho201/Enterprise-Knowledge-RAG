@@ -2,6 +2,7 @@
 LangGraph agent graph definition.
 Flow: START → Router → [Retriever → Grader → (Rewriter →)* Generator] → END
 """
+
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.generator import generator_node
@@ -38,9 +39,13 @@ def build_graph() -> StateGraph:
     graph.add_node("generator", generator_node)
 
     graph.add_edge(START, "router")
-    graph.add_conditional_edges("router", should_retrieve, {"retrieve": "retriever", "generate": "generator"})
+    graph.add_conditional_edges(
+        "router", should_retrieve, {"retrieve": "retriever", "generate": "generator"}
+    )
     graph.add_edge("retriever", "grader")
-    graph.add_conditional_edges("grader", should_rewrite, {"rewrite": "rewriter", "generate": "generator"})
+    graph.add_conditional_edges(
+        "grader", should_rewrite, {"rewrite": "rewriter", "generate": "generator"}
+    )
     graph.add_edge("rewriter", "retriever")
     graph.add_edge("generator", END)
 

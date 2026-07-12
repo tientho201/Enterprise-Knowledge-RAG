@@ -35,6 +35,7 @@ async def dashboard(user_id: CurrentUserIdDep, db: DbDep):
     total_msgs = (await db.execute(select(func.count(Message.id)))).scalar_one()
 
     from app.models.document import DocumentStatus
+
     status_counts = {}
     for s in DocumentStatus:
         count = (

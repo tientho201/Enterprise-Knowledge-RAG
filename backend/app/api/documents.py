@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Query, UploadFile
-from pydantic import BaseModel
 
 from app.core.dependencies import CurrentUserIdDep, DbDep
 from app.schemas.document import DocumentListResponse, DocumentResponse, ReindexRequest

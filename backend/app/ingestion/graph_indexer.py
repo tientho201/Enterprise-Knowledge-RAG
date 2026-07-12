@@ -19,6 +19,7 @@ Legal cross-reference patterns detected (Vietnamese)
   • "Mục 4"
   • "Nghị định số 12/2024/NĐ-CP" (referenced decrees — future: cross-document)
 """
+
 import logging
 import re
 from dataclasses import dataclass
@@ -70,6 +71,7 @@ def _build_article_map(chunks: list[ChunkRecord]) -> dict[str, list[str]]:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def index_chunks_to_graph(
     driver: Driver,

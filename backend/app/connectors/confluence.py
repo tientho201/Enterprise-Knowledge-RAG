@@ -1,4 +1,5 @@
 """Confluence connector — syncs pages from a Confluence space."""
+
 import os
 
 from app.connectors.base import BaseConnector, ConnectorDocument
@@ -17,6 +18,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _get_client(self):
         import httpx
+
         return httpx.Client(
             base_url=self.base_url,
             auth=(self.username, self.api_token),
@@ -24,7 +26,8 @@ class ConfluenceConnector(BaseConnector):
             timeout=30.0,
         )
 
-    def load(self, space_key: str, **kwargs) -> list[ConnectorDocument]:
+    # Connectors intentionally have source-specific load signatures (Confluence needs a space key).
+    def load(self, space_key: str, **kwargs) -> list[ConnectorDocument]:  # type: ignore[override]
         client = self._get_client()
         docs = []
         start = 0
@@ -33,7 +36,13 @@ class ConfluenceConnector(BaseConnector):
         while True:
             resp = client.get(
                 "/wiki/rest/api/content",
-                params={"spaceKey": space_key, "type": "page", "start": start, "limit": limit, "expand": "body.storage"},
+                params={
+                    "spaceKey": space_key,
+                    "type": "page",
+                    "start": start,
+                    "limit": limit,
+                    "expand": "body.storage",
+                },
             )
             resp.raise_for_status()
             data = resp.json()
@@ -46,7 +55,10 @@ class ConfluenceConnector(BaseConnector):
                         title=page["title"],
                         content=page["body"]["storage"]["value"],
                         source_url=f"{self.base_url}/wiki/spaces/{space_key}/pages/{page['id']}",
-                        metadata={"space_key": space_key, "version": page.get("version", {}).get("number", 1)},
+                        metadata={
+                            "space_key": space_key,
+                            "version": page.get("version", {}).get("number", 1),
+                        },
                     )
                 )
 

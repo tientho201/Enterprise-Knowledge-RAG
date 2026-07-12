@@ -1,4 +1,3 @@
-
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +30,9 @@ class ChatService:
         if conversation_id:
             conv = await self.repo.get_by_id(conversation_id, user_id)
             if not conv:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+                )
         else:
             # Auto-title from first message
             title = message[:60] + ("..." if len(message) > 60 else "")
@@ -63,6 +64,7 @@ class ChatService:
 
         # Save assistant message
         import json
+
         content_to_save = answer
         if citations:
             content_to_save += f"\n<!--citations:{json.dumps(citations)}-->"
@@ -71,6 +73,7 @@ class ChatService:
         # Save citations to DB (skip web citations which are not in local DB chunks table)
         if citations:
             from app.models.citation import Citation
+
             for cit in citations:
                 chunk_id = cit.get("chunk_id", "")
                 if chunk_id and not chunk_id.startswith("web_"):
@@ -82,13 +85,14 @@ class ChatService:
 
         # Save audit log to DB/Supabase
         from app.repositories.audit_log_repo import AuditLogRepository
+
         audit_repo = AuditLogRepository(self.db)
         await audit_repo.create(
             user_id=user_id,
             action=f'Chạy truy vấn RAG: "{message[:30] + "..." if len(message) > 30 else message}"',
             resource_type="query",
             resource_id=conv.id,
-            extra_data={"details": f"Trích dẫn: {len(citations)}"}
+            extra_data={"details": f"Trích dẫn: {len(citations)}"},
         )
 
         return ChatResponse(
@@ -117,11 +121,13 @@ class ChatService:
     async def get_conversation(self, user_id: str, conv_id: str) -> ConversationDetailResponse:
         conv = await self.repo.get_by_id(conv_id, user_id)
         if not conv:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
-        
-        import re
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+            )
+
         import json
-        
+        import re
+
         messages = []
         for m in conv.messages:
             content = m.content
@@ -134,7 +140,7 @@ class ChatService:
                     except Exception:
                         pass
                     content = re.sub(r"\s*<!--citations:.*?-->", "", content, flags=re.DOTALL)
-            
+
             messages.append(
                 MessageResponse(
                     id=m.id,
@@ -154,4 +160,6 @@ class ChatService:
     async def delete_conversation(self, user_id: str, conv_id: str) -> None:
         deleted = await self.repo.delete(conv_id, user_id)
         if not deleted:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+            )

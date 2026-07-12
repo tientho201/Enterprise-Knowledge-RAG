@@ -15,7 +15,7 @@ class BaseLLM(ABC):
         """Send a chat completion request and return the response text."""
 
     @abstractmethod
-    async def stream_chat(
+    def stream_chat(
         self,
         messages: list[dict],
         temperature: float | None = None,

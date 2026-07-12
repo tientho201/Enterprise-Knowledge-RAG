@@ -11,6 +11,7 @@ Local dev:  LocalStack tại http://localhost:4566
             AWS_ACCESS_KEY_ID=test / AWS_SECRET_ACCESS_KEY=test
 Production: AWS S3 thật — để trống AWS_S3_ENDPOINT_URL
 """
+
 import asyncio
 import io
 import logging
@@ -150,6 +151,7 @@ class S3Client:
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
 
+
 @lru_cache
 def get_s3_client() -> S3Client:
     return S3Client()
@@ -158,6 +160,7 @@ def get_s3_client() -> S3Client:
 # ── Async helpers (for use in FastAPI async endpoints) ────────────────────────
 # boto3 is sync-only. Running it directly in an async endpoint blocks the event loop.
 # These wrappers use run_in_executor so the upload/download runs in a thread pool.
+
 
 async def upload_bytes_async(
     object_name: str,

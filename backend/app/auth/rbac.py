@@ -2,6 +2,7 @@
 Role-Based Access Control (RBAC) utilities.
 Roles: admin > editor > viewer
 """
+
 from fastapi import Depends, HTTPException, status
 
 from app.core.dependencies import CurrentUserIdDep, DbDep
@@ -17,6 +18,7 @@ ROLE_HIERARCHY = {
 
 def require_role(minimum_role: UserRole):
     """FastAPI dependency factory — raises 403 if user's role is below minimum."""
+
     async def _check(user_id: CurrentUserIdDep, db: DbDep):
         repo = UserRepository(db)
         user = await repo.get_by_id(user_id)

@@ -5,6 +5,7 @@ dense_results  — raw Qdrant ANN hits
 graph_results  — Neo4j-expanded chunks (NEXT_CHUNK / REFERENCES traversal)
 merged_results — hybrid-scored union, sorted by descending score
 """
+
 from app.agents.state import AgentState
 from app.ingestion.embedder import get_embedder
 from app.rag.retriever import HybridRetriever
@@ -27,7 +28,9 @@ async def retriever_node(state: AgentState) -> AgentState:
     graph_results = [chunk for chunk, _ in graph_map.values()]
 
     # Merge + hybrid score
-    merged_results = retriever.retrieve(query, query_embedding, document_ids=state.get("document_ids"))
+    merged_results = retriever.retrieve(
+        query, query_embedding, document_ids=state.get("document_ids")
+    )
 
     return {
         **state,

@@ -14,6 +14,7 @@ TODO: nếu cần chất lượng rerank tốt hơn hybrid score thô, cân nh�
   - Cohere Rerank API (rẻ, không cần tự host model)
   - Batch 1 LLM call chấm điểm tất cả chunks cùng lúc (thay vì N calls như grader hiện tại)
 """
+
 from functools import lru_cache
 
 from app.core.config import settings

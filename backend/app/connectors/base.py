@@ -1,4 +1,5 @@
 """Base connector interface for all external data sources."""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any

@@ -15,6 +15,7 @@ def get_llm() -> BaseLLM:
 
     if provider == "openai":
         from app.llm.openai_llm import OpenAILLM
+
         return OpenAILLM()
     # elif provider == "vllm":
     #     from app.llm.vllm_llm import VLLMLLM

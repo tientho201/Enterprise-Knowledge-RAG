@@ -1,4 +1,5 @@
 """PDF connector — wraps the ingestion pipeline for local PDF files."""
+
 from pathlib import Path
 
 from app.connectors.base import BaseConnector, ConnectorDocument
@@ -7,7 +8,8 @@ from app.models.document import DocumentType
 
 
 class PDFConnector(BaseConnector):
-    def load(self, file_path: str) -> list[ConnectorDocument]:
+    # Connectors intentionally have source-specific load signatures (PDF needs a file path).
+    def load(self, file_path: str) -> list[ConnectorDocument]:  # type: ignore[override]
         path = Path(file_path)
         file_bytes = path.read_bytes()
         text = extract_text(file_bytes, DocumentType.pdf)

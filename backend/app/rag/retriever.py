@@ -12,6 +12,7 @@ Graph search starts from the dense seed chunks and expands through:
 Graceful degradation: if Neo4j is unavailable the pipeline falls back to
 dense-only mode without raising an exception.
 """
+
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -68,35 +69,30 @@ class HybridRetriever:
 
     # ── Dense ─────────────────────────────────────────────────────────────────
 
-    def _dense_search(self, query_embedding: list[float], document_ids: list[str] | None = None) -> list[RetrievedChunk]:
+    def _dense_search(
+        self, query_embedding: list[float], document_ids: list[str] | None = None
+    ) -> list[RetrievedChunk]:
         import httpx
+
         headers = {"Content-Type": "application/json"}
         if settings.QDRANT_API_KEY:
             headers["api-key"] = settings.QDRANT_API_KEY
-            
+
         url = f"{settings.QDRANT_URL.rstrip('/')}/collections/{settings.QDRANT_COLLECTION_NAME}/points/search"
         payload = {
             "vector": query_embedding,
             "limit": self.dense_top_k,
             "with_payload": True,
-            "with_vector": False
+            "with_vector": False,
         }
         if document_ids:
-            payload["filter"] = {
-                "must": [
-                    {
-                        "key": "document_id",
-                        "match": {
-                            "any": document_ids
-                        }
-                    }
-                ]
-            }
+            payload["filter"] = {"must": [{"key": "document_id", "match": {"any": document_ids}}]}
         try:
             with httpx.Client(timeout=10.0) as client:
                 response = client.post(url, json=payload, headers=headers)
                 if response.status_code != 200:
                     import logging
+
                     logging.getLogger(__name__).error(
                         f"Qdrant search failed: status {response.status_code}, response {response.text}"
                     )
@@ -105,16 +101,25 @@ class HybridRetriever:
                 return [
                     RetrievedChunk(
                         chunk_id=str(hit["id"]),
-                        document_id=hit.get("payload", {}).get("document_id", "") if hit.get("payload") else "",
-                        document_name=hit.get("payload", {}).get("document_name", "") if hit.get("payload") else "",
-                        content=hit.get("payload", {}).get("content", "") if hit.get("payload") else "",
+                        document_id=hit.get("payload", {}).get("document_id", "")
+                        if hit.get("payload")
+                        else "",
+                        document_name=hit.get("payload", {}).get("document_name", "")
+                        if hit.get("payload")
+                        else "",
+                        content=hit.get("payload", {}).get("content", "")
+                        if hit.get("payload")
+                        else "",
                         score=hit.get("score", 0.0),
-                        chunk_index=hit.get("payload", {}).get("chunk_index", 0) if hit.get("payload") else 0,
+                        chunk_index=hit.get("payload", {}).get("chunk_index", 0)
+                        if hit.get("payload")
+                        else 0,
                     )
                     for hit in results
                 ]
-        except Exception as e:
+        except Exception:
             import logging
+
             logging.getLogger(__name__).exception("Error calling Qdrant search REST API")
             return []
 
@@ -193,7 +198,9 @@ class HybridRetriever:
 
     # ── Merge & rank ──────────────────────────────────────────────────────────
 
-    def retrieve(self, query: str, query_embedding: list[float], document_ids: list[str] | None = None) -> list[RetrievedChunk]:
+    def retrieve(
+        self, query: str, query_embedding: list[float], document_ids: list[str] | None = None
+    ) -> list[RetrievedChunk]:
         """
         Run hybrid retrieval and return chunks sorted by descending hybrid score.
 

@@ -1,4 +1,5 @@
 """Celery tasks for external source connectors (Confluence, Slack, Google Drive)."""
+
 import logging
 
 from app.workers.celery_app import celery_app
@@ -17,6 +18,7 @@ def sync_confluence(self, space_key: str) -> dict:
     logger.info("Syncing Confluence space: %s", space_key)
     try:
         from app.connectors.confluence import ConfluenceConnector
+
         connector = ConfluenceConnector()
         result = connector.sync(space_key)
         return result

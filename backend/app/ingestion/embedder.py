@@ -2,6 +2,7 @@
 OpenAI Embeddings — replaces BGE-M3 local model.
 Uses text-embedding-3-small by default (1536 dims, cost-effective).
 """
+
 from functools import lru_cache
 
 from openai import OpenAI
@@ -18,7 +19,7 @@ _DIMENSIONS: dict[str, int] = {
 class OpenAIEmbedder:
     """Wraps OpenAI Embeddings API with batched calls."""
 
-    def __init__(self, model: str = None, batch_size: int = None):
+    def __init__(self, model: str | None = None, batch_size: int | None = None):
         self.model = model or settings.EMBEDDING_MODEL
         self.batch_size = batch_size or settings.EMBEDDING_BATCH_SIZE
         self._client = OpenAI(api_key=settings.OPENAI_API_KEY)

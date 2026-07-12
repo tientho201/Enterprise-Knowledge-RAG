@@ -1,4 +1,5 @@
 """Router node: classifies query intent as rag | chitchat | out_of_scope."""
+
 from app.agents.state import AgentState
 from app.llm.factory import get_llm
 

@@ -9,6 +9,7 @@ Storage split:
 
 All tasks are idempotent and retry-safe.
 """
+
 import asyncio
 import logging
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
+
 
 @celery_app.task(
     name="app.workers.tasks.ingestion.ingest_document",
@@ -139,8 +141,8 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                     graph_chunks = [
                         ChunkRecord(
                             chunk_id=str(p.id),
-                            content=p.payload["content"],
-                            chunk_index=p.payload["chunk_index"],
+                            content=(p.payload or {})["content"],
+                            chunk_index=(p.payload or {})["chunk_index"],
                         )
                         for p in points
                     ]
@@ -150,7 +152,9 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                         document_name=doc.name,
                         chunks=graph_chunks,
                     )
-                    logger.debug("Neo4j indexed %d chunks for document %s", len(graph_chunks), document_id)
+                    logger.debug(
+                        "Neo4j indexed %d chunks for document %s", len(graph_chunks), document_id
+                    )
                 except Exception as graph_exc:  # noqa: BLE001
                     logger.warning(
                         "Neo4j indexing skipped for document %s: %s", document_id, graph_exc
@@ -171,15 +175,14 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
 
 # ── Delete vectors (+ S3 file) ────────────────────────────────────────────────
 
+
 @celery_app.task(
     name="app.workers.tasks.ingestion.delete_document_vectors",
     bind=True,
     max_retries=3,
     retry_backoff=True,
 )
-def delete_document_vectors(
-    self, document_id: str, storage_path: str | None = None
-) -> dict:
+def delete_document_vectors(self, document_id: str, storage_path: str | None = None) -> dict:
     """
     Delete all vectors and graph nodes for a document, then delete the raw file from S3.
 
@@ -217,6 +220,7 @@ def delete_document_vectors(
         # 3. Delete raw file from S3 (only when explicitly requested — not during reindex)
         if storage_path:
             from app.storage.s3_client import get_s3_client
+
             try:
                 get_s3_client().delete_file(storage_path)
                 logger.debug("S3 file deleted: %s", storage_path)
@@ -230,6 +234,7 @@ def delete_document_vectors(
 
 
 # ── Reindex ───────────────────────────────────────────────────────────────────
+
 
 @celery_app.task(
     name="app.workers.tasks.ingestion.reindex_document",

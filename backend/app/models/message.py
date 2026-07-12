@@ -28,9 +28,7 @@ class Message(Base, UUIDMixin, TimestampMixin):
     role: Mapped[MessageRole] = mapped_column(Enum(MessageRole), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
-    conversation: Mapped[Conversation] = relationship(
-        "Conversation", back_populates="messages"
-    )
+    conversation: Mapped[Conversation] = relationship("Conversation", back_populates="messages")
     citations: Mapped[list[Citation]] = relationship(
         "Citation", back_populates="message", cascade="all, delete-orphan"
     )

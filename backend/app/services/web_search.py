@@ -1,8 +1,10 @@
-import httpx
-from html.parser import HTMLParser
 import logging
+from html.parser import HTMLParser
+
+import httpx
 
 logger = logging.getLogger(__name__)
+
 
 class DDGParser(HTMLParser):
     def __init__(self):
@@ -17,16 +19,16 @@ class DDGParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs_dict = dict(attrs)
         class_name = attrs_dict.get("class", "")
-        
+
         if tag == "div" and "result" in class_name.split():
             self.current_result = {}
-            
+
         elif tag == "a" and "result__snippet" in class_name.split():
             self.in_snippet = True
             self.temp_snippet = []
             if "href" in attrs_dict:
                 self.current_result["url"] = attrs_dict["href"]
-                
+
         elif tag == "a" and "result__url" in class_name.split():
             self.in_title = True
             self.temp_title = []
@@ -50,6 +52,7 @@ class DDGParser(HTMLParser):
         elif self.in_title:
             self.temp_title.append(data)
 
+
 async def perform_web_search(query: str) -> list[dict]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
@@ -63,10 +66,10 @@ async def perform_web_search(query: str) -> list[dict]:
             if response.status_code != 200:
                 logger.error(f"DuckDuckGo search failed with status code {response.status_code}")
                 return []
-            
+
             parser = DDGParser()
             parser.feed(response.text)
             return parser.results
-    except Exception as e:
+    except Exception:
         logger.exception("Error performing web search")
         return []

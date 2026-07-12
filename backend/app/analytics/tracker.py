@@ -2,6 +2,7 @@
 Usage tracker — records latency, token usage, retrieval precision,
 and hallucination rate. Integrates with LangSmith.
 """
+
 import logging
 import time
 from contextlib import asynccontextmanager

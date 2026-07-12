@@ -4,6 +4,7 @@ quyết định có bật PgBouncer workaround (statement_cache_size=0, ssl=requ
 trên DATABASE_URL. Đây là lý do duy nhất project cân nhắc dùng Supabase thật trong CI; test
 này verify đúng logic đó mà không cần container/service thật nào.
 """
+
 from app.core.config import settings
 from app.db.session import _connect_args
 

@@ -5,6 +5,7 @@ Storage split:
   - Raw files (PDF, DOCX, TXT) → AWS S3  (via s3_client async helpers)
   - Metadata (document records, audit logs) → Supabase / PostgreSQL (via repositories)
 """
+
 import uuid
 
 from fastapi import HTTPException, UploadFile, status
@@ -15,7 +16,6 @@ from app.repositories.audit_log_repo import AuditLogRepository
 from app.repositories.document_repo import DocumentRepository
 from app.schemas.document import DocumentListResponse, DocumentResponse
 from app.storage.s3_client import (
-    delete_file_async,
     get_presigned_url_async,
     upload_bytes_async,
 )
@@ -61,9 +61,9 @@ class DocumentService:
         # 2. Save document metadata to Supabase/PostgreSQL
         doc_type = ALLOWED_CONTENT_TYPES[file.content_type]
         doc = await self.repo.create(
-            name=file.filename,
+            name=file.filename or "untitled",
             doc_type=doc_type,
-            storage_path=object_name,      # S3 object key — used by Celery task to download
+            storage_path=object_name,  # S3 object key — used by Celery task to download
             file_size=len(file_bytes),
         )
 
@@ -81,6 +81,7 @@ class DocumentService:
 
         # 4. Dispatch async ingestion (non-blocking) — Celery downloads from S3
         from app.workers.tasks.ingestion import ingest_document
+
         ingest_document.delay(doc.id, object_name)
 
         return DocumentResponse.model_validate(doc)
@@ -146,6 +147,7 @@ class DocumentService:
 
         # 3. Queue: delete vectors (Qdrant + Neo4j) AND raw file from S3
         from app.workers.tasks.ingestion import delete_document_vectors
+
         delete_document_vectors.delay(doc_id, storage_path)
 
     # ── Reindex ───────────────────────────────────────────────────────────────
@@ -173,6 +175,7 @@ class DocumentService:
 
         # Pass storage_path so the task can chain delete → ingest without extra DB call
         from app.workers.tasks.ingestion import reindex_document
+
         reindex_document.delay(doc_id, doc.storage_path)
 
         return DocumentResponse.model_validate(doc)

@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     # Format:  postgresql+asyncpg://postgres.[PROJECT-REF]:[PASSWORD]@...pooler.supabase.com:6543/postgres
     # Dùng port 6543 (PgBouncer transaction mode) thay vì 5432 để tránh vượt connection limit
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/enterprise_rag"
-    DB_POOL_SIZE: int = 5       # Supabase free tier: tối đa 60 connections
-    DB_MAX_OVERFLOW: int = 10   # 5 pool + 10 overflow = 15 per worker instance
+    DB_POOL_SIZE: int = 5  # Supabase free tier: tối đa 60 connections
+    DB_MAX_OVERFLOW: int = 10  # 5 pool + 10 overflow = 15 per worker instance
 
     # ── AWS S3 — Raw document storage ─────────────────────────────────────────
     # Lưu trữ: raw files (PDF, DOCX, TXT) upload bởi người dùng
@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     def parse_cors_origins(cls, v):
         if isinstance(v, str):
             import json
+
             return json.loads(v)
         return v
 

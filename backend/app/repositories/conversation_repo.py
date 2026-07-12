@@ -1,4 +1,3 @@
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -26,7 +25,9 @@ class ConversationRepository:
         await self.db.refresh(conv)
         return conv
 
-    async def list_by_user(self, user_id: str, skip: int = 0, limit: int = 20) -> list[Conversation]:
+    async def list_by_user(
+        self, user_id: str, skip: int = 0, limit: int = 20
+    ) -> list[Conversation]:
         result = await self.db.execute(
             select(Conversation)
             .where(Conversation.user_id == user_id)
@@ -57,9 +58,7 @@ class ConversationRepository:
         return msg
 
     async def update_title(self, conv_id: str, title: str) -> None:
-        conv_result = await self.db.execute(
-            select(Conversation).where(Conversation.id == conv_id)
-        )
+        conv_result = await self.db.execute(select(Conversation).where(Conversation.id == conv_id))
         conv = conv_result.scalar_one_or_none()
         if conv:
             conv.title = title

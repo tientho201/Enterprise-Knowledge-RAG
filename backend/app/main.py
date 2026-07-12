@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, chat, documents, admin, audit_logs
+from app.api import admin, audit_logs, auth, chat, documents
 from app.core.config import settings
 
 logging.basicConfig(

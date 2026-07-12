@@ -2,6 +2,7 @@
 Ingestion pipeline:
 Upload → Store (S3) → Extract text → Chunk → Embed → Save (Qdrant + DB + Neo4j)
 """
+
 import io
 import uuid
 
@@ -32,10 +33,12 @@ def extract_text(file_bytes: bytes, doc_type: DocumentType) -> str:
     """Extract raw text from file bytes based on document type."""
     if doc_type == DocumentType.pdf:
         import pypdf
+
         reader = pypdf.PdfReader(io.BytesIO(file_bytes))
         return "\n\n".join(page.extract_text() or "" for page in reader.pages)
     elif doc_type == DocumentType.docx:
         import docx
+
         doc = docx.Document(io.BytesIO(file_bytes))
         return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
     elif doc_type == DocumentType.txt:
@@ -97,6 +100,7 @@ async def run_ingestion_pipeline(
 
         # Ensure Qdrant collection exists
         from qdrant_client.models import Distance, VectorParams
+
         qdrant_collections = [c.name for c in qdrant.get_collections().collections]
         if settings.QDRANT_COLLECTION_NAME not in qdrant_collections:
             qdrant.create_collection(
@@ -152,8 +156,8 @@ async def run_ingestion_pipeline(
             graph_chunks = [
                 ChunkRecord(
                     chunk_id=str(p.id),
-                    content=p.payload["content"],
-                    chunk_index=p.payload["chunk_index"],
+                    content=(p.payload or {})["content"],
+                    chunk_index=(p.payload or {})["chunk_index"],
                 )
                 for p in points
             ]
@@ -165,6 +169,7 @@ async def run_ingestion_pipeline(
             )
         except Exception as graph_exc:  # noqa: BLE001
             import logging
+
             logging.getLogger(__name__).warning(
                 "Neo4j indexing skipped for document %s: %s", doc.id, graph_exc
             )

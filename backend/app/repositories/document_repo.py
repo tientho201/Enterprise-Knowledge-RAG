@@ -58,9 +58,7 @@ class DocumentRepository:
             return True
         return False
 
-    async def list_active(
-        self, skip: int = 0, limit: int = 20
-    ) -> tuple[list[Document], int]:
+    async def list_active(self, skip: int = 0, limit: int = 20) -> tuple[list[Document], int]:
         base_query = select(Document).where(Document.deleted_at.is_(None))
         count_result = await self.db.execute(
             select(func.count()).select_from(base_query.subquery())
