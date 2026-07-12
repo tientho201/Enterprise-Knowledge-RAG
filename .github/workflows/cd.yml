@@ -1,0 +1,183 @@
+name: CD — Deploy to production
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "backend/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/cd.yml"
+    tags:
+      - "v*.*.*"   # trigger on version tags: v1.0.0, v1.2.3, ...
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/rag-backend
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  # CI là quality gate bắt buộc cho đúng commit/tag sắp deploy.
+  verify:
+    name: Verify release
+    uses: ./.github/workflows/ci.yml
+
+  # ─────────────────────────────────────────────
+  # JOB 1: Build & push Docker image
+  # ─────────────────────────────────────────────
+  build-push:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Run DB migrations (Alembic)
+  # ─────────────────────────────────────────────
+  migrate:
+    name: DB migrations
+    runs-on: ubuntu-latest
+    needs: build-push
+    environment: production
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.x"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install production dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Run Alembic migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run alembic upgrade head
+
+  # ─────────────────────────────────────────────
+  # JOB 3: Deploy
+  # Điền thông tin server của bạn vào secrets:
+  #   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [migrate, build-push]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Sync production Compose file
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: backend/docker-compose.prod.yml
+          target: /opt/rag
+          strip_components: 1
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -Eeuo pipefail
+            cd /opt/rag
+
+            export GITHUB_REPOSITORY="${{ github.repository }}"
+            export RAG_BACKEND_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-push.outputs.image-digest }}"
+
+            echo "${{ secrets.GITHUB_TOKEN }}" | \
+              docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            docker compose -f docker-compose.prod.yml pull api worker beat
+
+            docker compose -f docker-compose.prod.yml up -d \
+              --remove-orphans \
+              --wait \
+              --wait-timeout 120 \
+              redis neo4j api worker beat
+
+            curl --fail --silent --show-error \
+              --retry 5 --retry-delay 5 \
+              http://localhost:8000/health
+
+            docker image prune -f
+
+      - name: Notify deploy success
+        if: success()
+        run: |
+          echo "Deployed ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-push.outputs.image-digest }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Triggered by: ${{ github.actor }}"
+
+      - name: Notify deploy failure
+        if: failure()
+        run: |
+          echo "DEPLOY FAILED — commit ${{ github.sha }}"
+          exit 1

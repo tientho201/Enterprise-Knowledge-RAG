@@ -1,0 +1,219 @@
+name: Backend CI
+
+on:
+  push:
+    branches: ["develop"]
+    paths: ["backend/**", ".github/workflows/ci.yml"]
+  pull_request:
+    branches: ["main", "develop"]
+    paths: ["backend/**", ".github/workflows/ci.yml"]
+  workflow_call:
+  workflow_dispatch:
+
+# Hủy run cũ khi có push mới lên cùng branch/PR — tiết kiệm runner, tránh race.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  UV_VERSION: "0.5.x"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Lint, format, type check, lockfile & workflow validation
+  # ─────────────────────────────────────────────
+  lint:
+    name: Lint & static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv (with built-in cache)
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Verify uv.lock khớp pyproject.toml
+        run: uv lock --check
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format . --check
+
+      - name: Mypy type check
+        run: uv run mypy app/
+
+      - name: Validate GitHub workflows (actionlint)
+        uses: raven-actions/actionlint@v2
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Unit tests + coverage gate (SQLite, không service ngoài)
+  # ─────────────────────────────────────────────
+  test-unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+
+    env:
+      APP_ENV: test
+      SECRET_KEY: "ci-test-secret-key-not-for-production"
+      DATABASE_URL: "sqlite+aiosqlite:///./test.db"
+      OPENAI_API_KEY: "sk-test-fake-key-for-ci"
+      QDRANT_URL: "http://localhost:6333"
+      QDRANT_API_KEY: "test-key"
+      NEO4J_URI: "bolt://localhost:7687"
+      NEO4J_PASSWORD: "test"
+      AWS_ACCESS_KEY_ID: "test"
+      AWS_SECRET_ACCESS_KEY: "test"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv (with built-in cache)
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Run unit tests with coverage gate
+        run: |
+          uv run pytest app/tests/unit/ -v \
+            --tb=short \
+            --junitxml=reports/unit-results.xml \
+            --cov=app \
+            --cov-report=xml:reports/coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=6
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: backend/reports/
+
+  # ─────────────────────────────────────────────
+  # JOB 3: Integration tests — auth flow (chỉ cần PostgreSQL)
+  # Qdrant/Redis/Neo4j/LocalStack CHƯA cần: integration test hiện chỉ có auth.
+  # Thêm lại từng service khi có integration test ingestion/retrieval thực tế.
+  # ─────────────────────────────────────────────
+  test-integration:
+    name: Integration tests (auth)
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: enterprise_rag_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      APP_ENV: test
+      SECRET_KEY: "ci-test-secret-key-not-for-production"
+      DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/enterprise_rag_test"
+      OPENAI_API_KEY: "sk-test-fake-key-for-ci"
+      QDRANT_URL: "http://localhost:6333"
+      QDRANT_API_KEY: "test-key"
+      NEO4J_URI: "bolt://localhost:7687"
+      NEO4J_PASSWORD: "test"
+      AWS_ACCESS_KEY_ID: "test"
+      AWS_SECRET_ACCESS_KEY: "test"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv (with built-in cache)
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Run Alembic migrations (local Postgres)
+        run: uv run alembic upgrade head
+
+      - name: Run integration tests
+        run: |
+          uv run pytest app/tests/integration/ -v \
+            --tb=short \
+            --junitxml=reports/integration-results.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results
+          path: backend/reports/
+
+  # ─────────────────────────────────────────────
+  # JOB 4: Docker build (validate image builds OK, không push)
+  # ─────────────────────────────────────────────
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: [test-unit, test-integration]
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          tags: rag-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
