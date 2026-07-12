@@ -16,3 +16,4 @@ class AgentState(TypedDict):
     confidence_score: float
     retry_count: int
     search_tool: bool | None
+    document_ids: list[str] | None

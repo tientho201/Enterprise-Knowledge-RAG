@@ -1,14 +1,26 @@
+"""
+Document service — business logic layer.
+
+Storage split:
+  - Raw files (PDF, DOCX, TXT) → AWS S3  (via s3_client async helpers)
+  - Metadata (document records, audit logs) → Supabase / PostgreSQL (via repositories)
+"""
 import uuid
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import DocumentType
+from app.repositories.audit_log_repo import AuditLogRepository
 from app.repositories.document_repo import DocumentRepository
 from app.schemas.document import DocumentListResponse, DocumentResponse
-from app.storage.s3_client import get_s3_client
+from app.storage.s3_client import (
+    delete_file_async,
+    get_presigned_url_async,
+    upload_bytes_async,
+)
 
-ALLOWED_CONTENT_TYPES = {
+ALLOWED_CONTENT_TYPES: dict[str, DocumentType] = {
     "application/pdf": DocumentType.pdf,
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": DocumentType.docx,
     "text/plain": DocumentType.txt,
@@ -18,15 +30,21 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
 class DocumentService:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession) -> None:
         self.db = db
         self.repo = DocumentRepository(db)
+        self.audit = AuditLogRepository(db)
+
+    # ── Upload ────────────────────────────────────────────────────────────────
 
     async def upload(self, file: UploadFile, user_id: str | None = None) -> DocumentResponse:
+        """
+        Validate → upload raw file to S3 → save metadata to Supabase → dispatch Celery task.
+        """
         if file.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail=f"Unsupported file type: {file.content_type}",
+                detail=f"Unsupported file type: {file.content_type}. Allowed: pdf, docx, txt",
             )
 
         file_bytes = await file.read()
@@ -36,34 +54,38 @@ class DocumentService:
                 detail="File exceeds 50 MB limit",
             )
 
-        s3 = get_s3_client()
+        # 1. Upload raw file to S3 (async, non-blocking)
         object_name = f"{uuid.uuid4()}/{file.filename}"
-        s3.upload_bytes(object_name, file_bytes, content_type=file.content_type)
+        await upload_bytes_async(object_name, file_bytes, content_type=file.content_type)
 
+        # 2. Save document metadata to Supabase/PostgreSQL
         doc_type = ALLOWED_CONTENT_TYPES[file.content_type]
         doc = await self.repo.create(
             name=file.filename,
             doc_type=doc_type,
-            storage_path=object_name,
+            storage_path=object_name,      # S3 object key — used by Celery task to download
             file_size=len(file_bytes),
         )
 
-        # Save audit log to DB
-        from app.repositories.audit_log_repo import AuditLogRepository
-        audit_repo = AuditLogRepository(self.db)
-        await audit_repo.create(
+        # 3. Write audit log to Supabase
+        await self.audit.create(
             user_id=user_id,
             action=f"Đã nạp tài liệu: {file.filename}",
-            resource_type="upload",
+            resource_type="document",
             resource_id=doc.id,
-            extra_data={"details": f"Kích thước: {(len(file_bytes) / 1024):.0f} KB | Trạng thái: Sẵn sàng"},
+            extra_data={
+                "file_size_kb": round(len(file_bytes) / 1024),
+                "s3_path": object_name,
+            },
         )
 
-        # Dispatch async ingestion task (non-blocking)
+        # 4. Dispatch async ingestion (non-blocking) — Celery downloads from S3
         from app.workers.tasks.ingestion import ingest_document
         ingest_document.delay(doc.id, object_name)
 
         return DocumentResponse.model_validate(doc)
+
+    # ── Read ─────────────────────────────────────────────────────────────────
 
     async def get(self, doc_id: str) -> DocumentResponse:
         doc = await self.repo.get_by_id(doc_id)
@@ -81,42 +103,76 @@ class DocumentService:
             page_size=page_size,
         )
 
-    async def delete(self, doc_id: str, user_id: str | None = None) -> None:
+    async def get_download_url(self, doc_id: str, expires_seconds: int = 3600) -> str:
+        """
+        Generate a presigned S3 URL so the frontend can download the raw file directly
+        without proxying through the API server.
+        """
         doc = await self.repo.get_by_id(doc_id)
-        doc_name = doc.name if doc else doc_id
-        deleted = await self.repo.soft_delete(doc_id)
-        if not deleted:
+        if not doc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        if not doc.storage_path:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No file stored for this document",
+            )
+        return await get_presigned_url_async(doc.storage_path, expires_seconds)
 
-        # Save audit log to DB
-        from app.repositories.audit_log_repo import AuditLogRepository
-        audit_repo = AuditLogRepository(self.db)
-        await audit_repo.create(
-            user_id=user_id,
-            action=f"Đã xóa tài liệu: {doc_name}",
-            resource_type="upload",
-            resource_id=doc_id,
-        )
+    # ── Delete ────────────────────────────────────────────────────────────────
 
-        # Queue vector cleanup
-        from app.workers.tasks.ingestion import delete_document_vectors
-        delete_document_vectors.delay(doc_id)
-
-    async def reindex(self, doc_id: str, user_id: str | None = None) -> DocumentResponse:
+    async def delete(self, doc_id: str, user_id: str | None = None) -> None:
+        """
+        Soft-delete metadata in Supabase first, then queue S3 + vector cleanup via Celery.
+        S3 deletion is best-effort — handled in background task.
+        """
         doc = await self.repo.get_by_id(doc_id)
         if not doc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-        # Save audit log to DB
-        from app.repositories.audit_log_repo import AuditLogRepository
-        audit_repo = AuditLogRepository(self.db)
-        await audit_repo.create(
+        doc_name = doc.name
+        storage_path = doc.storage_path
+
+        # 1. Soft-delete metadata in Supabase
+        await self.repo.soft_delete(doc_id)
+
+        # 2. Write audit log to Supabase
+        await self.audit.create(
             user_id=user_id,
-            action=f"Đã yêu cầu reindex tài liệu: {doc.name}",
-            resource_type="upload",
+            action=f"Đã xóa tài liệu: {doc_name}",
+            resource_type="document",
+            resource_id=doc_id,
+            extra_data={"s3_path": storage_path},
+        )
+
+        # 3. Queue: delete vectors (Qdrant + Neo4j) AND raw file from S3
+        from app.workers.tasks.ingestion import delete_document_vectors
+        delete_document_vectors.delay(doc_id, storage_path)
+
+    # ── Reindex ───────────────────────────────────────────────────────────────
+
+    async def reindex(self, doc_id: str, user_id: str | None = None) -> DocumentResponse:
+        """
+        Queue a full reindex: delete old vectors → re-download from S3 → re-ingest.
+        S3 file is NOT deleted — only vector stores are cleared.
+        """
+        doc = await self.repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        if not doc.storage_path:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Document has no S3 file — cannot reindex",
+            )
+
+        await self.audit.create(
+            user_id=user_id,
+            action=f"Đã yêu cầu reindex: {doc.name}",
+            resource_type="document",
             resource_id=doc_id,
         )
 
+        # Pass storage_path so the task can chain delete → ingest without extra DB call
         from app.workers.tasks.ingestion import reindex_document
-        reindex_document.delay(doc_id)
+        reindex_document.delay(doc_id, doc.storage_path)
+
         return DocumentResponse.model_validate(doc)

@@ -1,9 +1,7 @@
-version: "3.9"
-
 # Production docker-compose
 # Cloud services (không cần container):
 #   - PostgreSQL  → Supabase
-#   - Storage     → Supabase Storage
+#   - Storage     → AWS S3
 #   - Qdrant      → Qdrant Cloud
 #
 # Self-hosted (container):
@@ -28,7 +26,7 @@ services:
   # ── API (FastAPI) ──────────────────────────
   api:
     <<: [*common-env, *logging]
-    image: ghcr.io/${GITHUB_REPOSITORY}/rag-backend:main
+    image: ${RAG_BACKEND_IMAGE:-ghcr.io/${GITHUB_REPOSITORY}/rag-backend:main}
     container_name: rag_api
     command: >
       uv run uvicorn app.main:app
@@ -52,7 +50,7 @@ services:
   # ── Celery Worker ──────────────────────────
   worker:
     <<: [*common-env, *logging]
-    image: ghcr.io/${GITHUB_REPOSITORY}/rag-backend:main
+    image: ${RAG_BACKEND_IMAGE:-ghcr.io/${GITHUB_REPOSITORY}/rag-backend:main}
     container_name: rag_worker
     command: >
       uv run celery -A app.workers.celery_app worker
@@ -72,7 +70,7 @@ services:
   # ── Celery Beat (scheduler) ────────────────
   beat:
     <<: [*common-env, *logging]
-    image: ghcr.io/${GITHUB_REPOSITORY}/rag-backend:main
+    image: ${RAG_BACKEND_IMAGE:-ghcr.io/${GITHUB_REPOSITORY}/rag-backend:main}
     container_name: rag_beat
     command: >
       uv run celery -A app.workers.celery_app beat

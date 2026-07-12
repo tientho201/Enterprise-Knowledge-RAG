@@ -12,79 +12,86 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Application
+    # ── Application ───────────────────────────────────────────────────────────
     APP_NAME: str = "Enterprise Knowledge RAG"
     APP_ENV: str = "development"
     DEBUG: bool = False
     SECRET_KEY: str = "changeme"
     API_V1_PREFIX: str = "/api/v1"
 
-    # Supabase / PostgreSQL
-    # Format: postgresql+asyncpg://postgres:[PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres
+    # ── Supabase / PostgreSQL ─────────────────────────────────────────────────
+    # Lưu trữ: users, documents metadata, chunks, conversations, messages, audit_logs
+    # Format:  postgresql+asyncpg://postgres.[PROJECT-REF]:[PASSWORD]@...pooler.supabase.com:6543/postgres
+    # Dùng port 6543 (PgBouncer transaction mode) thay vì 5432 để tránh vượt connection limit
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/enterprise_rag"
-    # Connection pool size — Supabase free tier giới hạn 60 connections
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_SIZE: int = 5       # Supabase free tier: tối đa 60 connections
+    DB_MAX_OVERFLOW: int = 10   # 5 pool + 10 overflow = 15 per worker instance
 
-    # Redis
-    REDIS_URL: str = "redis://localhost:6379/0"
-
-    # Celery
-    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
-
-    # Qdrant Cloud
-    # URL format: https://[cluster-id].qdrant.tech
-    QDRANT_URL: str = "http://localhost:6333"
-    QDRANT_API_KEY: str = ""
-    QDRANT_COLLECTION_NAME: str = "enterprise_knowledge"
-
-    # AWS S3 / LocalStack
-    # Local dev: LocalStack tại http://localhost:4566 (AWS_S3_ENDPOINT_URL phải được set)
-    # Production: để trống AWS_S3_ENDPOINT_URL → dùng AWS S3 thật
+    # ── AWS S3 — Raw document storage ─────────────────────────────────────────
+    # Lưu trữ: raw files (PDF, DOCX, TXT) upload bởi người dùng
+    # Local dev:  LocalStack → AWS_S3_ENDPOINT_URL=http://localhost:4566
+    # Production: AWS S3 thật → để trống AWS_S3_ENDPOINT_URL
     AWS_ACCESS_KEY_ID: str = "test"
     AWS_SECRET_ACCESS_KEY: str = "test"
     AWS_REGION: str = "us-east-1"
     AWS_S3_BUCKET_NAME: str = "documents"
-    AWS_S3_ENDPOINT_URL: str = "http://localhost:4566"  # để trống khi dùng AWS S3 thật
+    AWS_S3_ENDPOINT_URL: str = "http://localhost:4566"  # empty string = use real AWS S3
 
-    # OpenAI
+    # ── Redis ─────────────────────────────────────────────────────────────────
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    # ── Celery ────────────────────────────────────────────────────────────────
+    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
+
+    # ── Qdrant Cloud — Vector store ───────────────────────────────────────────
+    # Lưu trữ: dense embeddings của chunks
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: str = ""
+    QDRANT_COLLECTION_NAME: str = "enterprise_knowledge"
+
+    # ── Neo4j — Knowledge Graph ───────────────────────────────────────────────
+    # Lưu trữ: graph edges giữa chunks (NEXT_CHUNK, REFERENCES)
+    # Local: docker-compose up neo4j
+    # Cloud: https://neo4j.com/cloud/aura-free
+    NEO4J_URI: str = "bolt://localhost:7687"
+    NEO4J_USER: str = "neo4j"
+    NEO4J_PASSWORD: str = "neo4j"
+
+    # ── OpenAI ────────────────────────────────────────────────────────────────
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_MAX_TOKENS: int = 2048
     OPENAI_TEMPERATURE: float = 0.1
 
-    # LangSmith
+    # ── Embedding (OpenAI) ────────────────────────────────────────────────────
+    # text-embedding-3-small: 1536 dims, cost-effective
+    # text-embedding-3-large: 3072 dims, higher quality
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_BATCH_SIZE: int = 512
+
+    # ── LangSmith ────────────────────────────────────────────────────────────
     LANGCHAIN_TRACING_V2: bool = False
     LANGCHAIN_API_KEY: str = ""
     LANGCHAIN_PROJECT: str = "enterprise-knowledge-rag"
 
-    # JWT
+    # ── JWT ───────────────────────────────────────────────────────────────────
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Embedding (OpenAI)
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
-    EMBEDDING_BATCH_SIZE: int = 512
-
-    # Chunking
+    # ── Chunking ──────────────────────────────────────────────────────────────
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 200
 
-    # Neo4j (Knowledge Graph — replaces BM25 sparse search)
-    NEO4J_URI: str = "bolt://localhost:7687"
-    NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = "neo4j"
-
-    # Retrieval
+    # ── Retrieval ─────────────────────────────────────────────────────────────
     DENSE_TOP_K: int = 20
-    GRAPH_TOP_K: int = 20       # max graph-expanded chunks per query
+    GRAPH_TOP_K: int = 20
     RERANK_TOP_K: int = 5
     DENSE_WEIGHT: float = 0.7
-    GRAPH_WEIGHT: float = 0.3   # formerly SPARSE_WEIGHT
+    GRAPH_WEIGHT: float = 0.3
 
-    # CORS
+    # ── CORS ──────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]
 
     @field_validator("ALLOWED_ORIGINS", mode="before")

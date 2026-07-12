@@ -1,5 +1,12 @@
 """
-Celery tasks for document ingestion pipeline.
+Celery tasks — document ingestion pipeline.
+
+Storage split:
+  - Raw files  → AWS S3        (download khi cần xử lý, delete khi document bị xóa)
+  - Metadata   → Supabase/PG   (document records, chunks, audit logs)
+  - Vectors    → Qdrant Cloud  (dense embeddings)
+  - Graph      → Neo4j         (knowledge graph, best-effort)
+
 All tasks are idempotent and retry-safe.
 """
 import asyncio
@@ -9,6 +16,8 @@ from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
+
+# ── Ingest ────────────────────────────────────────────────────────────────────
 
 @celery_app.task(
     name="app.workers.tasks.ingestion.ingest_document",
@@ -20,10 +29,13 @@ logger = logging.getLogger(__name__)
 )
 def ingest_document(self, document_id: str, storage_path: str) -> dict:
     """
-    Extract, chunk, embed and index a document.
-    Idempotent: safe to retry on failure.
+    Download raw file from S3 → extract text → chunk → embed → save to Qdrant + Supabase + Neo4j.
+
+    Args:
+        document_id:  UUID of the Document record in Supabase/PostgreSQL.
+        storage_path: S3 object key (e.g. "uuid/filename.pdf").
     """
-    logger.info("Starting ingestion for document %s", document_id)
+    logger.info("Starting ingestion: document_id=%s s3=%s", document_id, storage_path)
     try:
         import uuid
 
@@ -33,45 +45,60 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
         from app.db.session import AsyncSessionLocal
         from app.ingestion.chunker import DocumentChunker
         from app.ingestion.embedder import get_embedder
+        from app.ingestion.pipeline import extract_text
         from app.models.chunk import Chunk
         from app.models.document import DocumentStatus
         from app.rag.retriever import get_qdrant_client
         from app.repositories.document_repo import DocumentRepository
         from app.storage.s3_client import get_s3_client
 
+        # 1. Download raw file from S3 (sync — we're in a Celery worker thread)
         s3 = get_s3_client()
         file_bytes = s3.download_file(storage_path)
+        logger.debug("Downloaded %d bytes from S3: %s", len(file_bytes), storage_path)
 
-        async def _run():
+        async def _run() -> None:
             async with AsyncSessionLocal() as db:
                 doc_repo = DocumentRepository(db)
+
+                # 2. Fetch metadata from Supabase
                 doc = await doc_repo.get_by_id(document_id)
                 if not doc:
-                    raise ValueError(f"Document {document_id} not found")
+                    raise ValueError(f"Document {document_id} not found in database")
 
                 await doc_repo.update_status(document_id, DocumentStatus.processing)
 
-                from app.ingestion.pipeline import extract_text
-                doc_type = doc.type
-                text = extract_text(file_bytes, doc_type)
+                # 3. Extract text
+                text = extract_text(file_bytes, doc.type)
+                if not text.strip():
+                    raise ValueError("No text could be extracted from the document")
 
+                # 4. Chunk
                 chunker = DocumentChunker()
-                chunks = chunker.chunk(text, metadata={"document_id": document_id})
+                chunks = chunker.chunk(
+                    text,
+                    metadata={"document_id": document_id, "document_name": doc.name},
+                )
 
+                # 5. Embed via OpenAI API
                 embedder = get_embedder()
-                texts = [c.content for c in chunks]
-                embeddings = embedder.embed(texts)
+                embeddings = embedder.embed([c.content for c in chunks])
 
+                # 6. Ensure Qdrant collection exists
                 qdrant = get_qdrant_client()
-                collections = [c.name for c in qdrant.get_collections().collections]
-                if settings.QDRANT_COLLECTION_NAME not in collections:
+                existing = [c.name for c in qdrant.get_collections().collections]
+                if settings.QDRANT_COLLECTION_NAME not in existing:
                     qdrant.create_collection(
                         collection_name=settings.QDRANT_COLLECTION_NAME,
-                        vectors_config=VectorParams(size=embedder.dimension, distance=Distance.COSINE),
+                        vectors_config=VectorParams(
+                            size=embedder.dimension, distance=Distance.COSINE
+                        ),
                     )
 
-                points = []
-                chunk_records = []
+                # 7. Build Qdrant points + Supabase chunk records
+                points: list[PointStruct] = []
+                chunk_records: list[Chunk] = []
+
                 for chunk, embedding in zip(chunks, embeddings):
                     chunk_id = str(uuid.uuid4())
                     points.append(
@@ -98,10 +125,13 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                         )
                     )
 
+                # 8. Upsert vectors to Qdrant Cloud
                 qdrant.upsert(collection_name=settings.QDRANT_COLLECTION_NAME, points=points)
+
+                # 9. Save chunk metadata to Supabase/PostgreSQL
                 db.add_all(chunk_records)
 
-                # Index into Neo4j knowledge graph (best-effort)
+                # 10. Index graph edges to Neo4j (best-effort — failure does not abort ingestion)
                 try:
                     from app.ingestion.graph_indexer import ChunkRecord, index_chunks_to_graph
                     from app.rag.graph_client import get_neo4j_driver
@@ -120,22 +150,26 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                         document_name=doc.name,
                         chunks=graph_chunks,
                     )
+                    logger.debug("Neo4j indexed %d chunks for document %s", len(graph_chunks), document_id)
                 except Exception as graph_exc:  # noqa: BLE001
                     logger.warning(
                         "Neo4j indexing skipped for document %s: %s", document_id, graph_exc
                     )
 
+                # 11. Update document status in Supabase
                 await doc_repo.update_status(document_id, DocumentStatus.indexed)
                 await db.commit()
 
         asyncio.run(_run())
-        logger.info("Ingestion complete for document %s", document_id)
+        logger.info("Ingestion complete: document_id=%s chunks=%s", document_id, "ok")
         return {"document_id": document_id, "status": "indexed"}
 
     except Exception as exc:
-        logger.error("Ingestion failed for document %s: %s", document_id, exc)
+        logger.error("Ingestion failed: document_id=%s error=%s", document_id, exc)
         raise self.retry(exc=exc)
 
+
+# ── Delete vectors (+ S3 file) ────────────────────────────────────────────────
 
 @celery_app.task(
     name="app.workers.tasks.ingestion.delete_document_vectors",
@@ -143,15 +177,24 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
     max_retries=3,
     retry_backoff=True,
 )
-def delete_document_vectors(self, document_id: str) -> dict:
-    """Remove all vectors (Qdrant) and graph nodes (Neo4j) for a document."""
+def delete_document_vectors(
+    self, document_id: str, storage_path: str | None = None
+) -> dict:
+    """
+    Delete all vectors and graph nodes for a document, then delete the raw file from S3.
+
+    Args:
+        document_id:  UUID of the document.
+        storage_path: S3 object key. If provided, the raw file is also deleted from S3.
+                      Pass None to skip S3 deletion (e.g. during reindex — file must be kept).
+    """
     try:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
         from app.core.config import settings
         from app.rag.retriever import get_qdrant_client
 
-        # Delete from Qdrant
+        # 1. Delete vectors from Qdrant Cloud
         qdrant = get_qdrant_client()
         qdrant.delete(
             collection_name=settings.QDRANT_COLLECTION_NAME,
@@ -159,22 +202,34 @@ def delete_document_vectors(self, document_id: str) -> dict:
                 must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
             ),
         )
+        logger.debug("Qdrant vectors deleted for document %s", document_id)
 
-        # Delete from Neo4j (best-effort)
+        # 2. Delete graph nodes from Neo4j (best-effort)
         try:
             from app.ingestion.graph_indexer import delete_document_from_graph
             from app.rag.graph_client import get_neo4j_driver
 
             delete_document_from_graph(get_neo4j_driver(), document_id)
+            logger.debug("Neo4j nodes deleted for document %s", document_id)
         except Exception as graph_exc:  # noqa: BLE001
-            logger.warning(
-                "Neo4j delete skipped for document %s: %s", document_id, graph_exc
-            )
+            logger.warning("Neo4j delete skipped for document %s: %s", document_id, graph_exc)
 
-        return {"document_id": document_id, "status": "vectors_deleted"}
+        # 3. Delete raw file from S3 (only when explicitly requested — not during reindex)
+        if storage_path:
+            from app.storage.s3_client import get_s3_client
+            try:
+                get_s3_client().delete_file(storage_path)
+                logger.debug("S3 file deleted: %s", storage_path)
+            except Exception as s3_exc:  # noqa: BLE001
+                logger.warning("S3 delete failed for %s: %s", storage_path, s3_exc)
+
+        return {"document_id": document_id, "status": "deleted"}
+
     except Exception as exc:
         raise self.retry(exc=exc)
 
+
+# ── Reindex ───────────────────────────────────────────────────────────────────
 
 @celery_app.task(
     name="app.workers.tasks.ingestion.reindex_document",
@@ -182,19 +237,26 @@ def delete_document_vectors(self, document_id: str) -> dict:
     max_retries=3,
     retry_backoff=True,
 )
-def reindex_document(self, document_id: str) -> dict:
-    """Delete old vectors and re-ingest the document."""
-    delete_document_vectors.delay(document_id)
-    # Fetch storage_path from DB and re-run ingest
-    async def _get_path():
-        from app.db.session import AsyncSessionLocal
-        from app.repositories.document_repo import DocumentRepository
-        async with AsyncSessionLocal() as db:
-            repo = DocumentRepository(db)
-            doc = await repo.get_by_id(document_id)
-            return doc.storage_path if doc else None
+def reindex_document(self, document_id: str, storage_path: str) -> dict:
+    """
+    Full reindex: delete old vectors → re-download from S3 → re-ingest.
+    Raw S3 file is preserved. Uses Celery chain to guarantee ordering.
 
-    storage_path = asyncio.run(_get_path())
-    if storage_path:
-        ingest_document.delay(document_id, storage_path)
-    return {"document_id": document_id, "status": "reindex_queued"}
+    Args:
+        document_id:  UUID of the document.
+        storage_path: S3 object key — passed through so ingest doesn't need a DB lookup.
+    """
+    try:
+        from celery import chain
+
+        # chain() guarantees delete finishes BEFORE ingest starts (fixes race condition)
+        chain(
+            delete_document_vectors.si(document_id, storage_path=None),  # None = keep S3 file
+            ingest_document.si(document_id, storage_path),
+        ).apply_async()
+
+        logger.info("Reindex queued for document %s (s3=%s)", document_id, storage_path)
+        return {"document_id": document_id, "status": "reindex_queued"}
+
+    except Exception as exc:
+        raise self.retry(exc=exc)

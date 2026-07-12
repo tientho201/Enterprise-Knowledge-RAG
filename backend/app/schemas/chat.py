@@ -21,6 +21,7 @@ class ChatRequest(BaseModel):
     message: str
     conversation_id: str | None = None
     search_tool: bool | None = Field(default=False, alias="searchTool")
+    document_ids: list[str] | None = Field(default=None, alias="documentIds")
 
     model_config = {
         "populate_by_name": True,

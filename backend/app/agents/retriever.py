@@ -19,15 +19,15 @@ async def retriever_node(state: AgentState) -> AgentState:
     query_embedding = embedder.embed_query(query)
 
     # Dense seeds (Qdrant)
-    dense_results = retriever._dense_search(query_embedding)
+    dense_results = retriever._dense_search(query_embedding, document_ids=state.get("document_ids"))
 
     # Graph expansion (Neo4j) — returns {} if Neo4j is unavailable
     seed_ids = [r.chunk_id for r in dense_results]
-    graph_map = retriever._graph_search(seed_ids)
+    graph_map = retriever._graph_search(seed_ids, document_ids=state.get("document_ids"))
     graph_results = [chunk for chunk, _ in graph_map.values()]
 
     # Merge + hybrid score
-    merged_results = retriever.retrieve(query, query_embedding)
+    merged_results = retriever.retrieve(query, query_embedding, document_ids=state.get("document_ids"))
 
     return {
         **state,

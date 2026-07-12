@@ -68,7 +68,7 @@ class HybridRetriever:
 
     # ── Dense ─────────────────────────────────────────────────────────────────
 
-    def _dense_search(self, query_embedding: list[float]) -> list[RetrievedChunk]:
+    def _dense_search(self, query_embedding: list[float], document_ids: list[str] | None = None) -> list[RetrievedChunk]:
         import httpx
         headers = {"Content-Type": "application/json"}
         if settings.QDRANT_API_KEY:
@@ -81,6 +81,17 @@ class HybridRetriever:
             "with_payload": True,
             "with_vector": False
         }
+        if document_ids:
+            payload["filter"] = {
+                "must": [
+                    {
+                        "key": "document_id",
+                        "match": {
+                            "any": document_ids
+                        }
+                    }
+                ]
+            }
         try:
             with httpx.Client(timeout=10.0) as client:
                 response = client.post(url, json=payload, headers=headers)
@@ -110,7 +121,7 @@ class HybridRetriever:
     # ── Graph ─────────────────────────────────────────────────────────────────
 
     def _graph_search(
-        self, seed_ids: list[str]
+        self, seed_ids: list[str], document_ids: list[str] | None = None
     ) -> dict[str, tuple[RetrievedChunk, float]]:
         """
         Expand seed chunks through the Neo4j knowledge graph.
@@ -129,14 +140,19 @@ class HybridRetriever:
         try:
             from app.rag.graph_client import get_neo4j_driver
 
+            doc_filter = ""
+            if document_ids:
+                doc_filter = "AND related.document_id IN $document_ids"
+
             driver = get_neo4j_driver()
             with driver.session() as session:
                 result = session.run(
-                    """
+                    f"""
                     UNWIND $seed_ids AS sid
-                    MATCH (seed:Chunk {chunk_id: sid})
+                    MATCH (seed:Chunk {{chunk_id: sid}})
                     MATCH (seed)-[:NEXT_CHUNK|REFERENCES*1..2]-(related:Chunk)
                     WHERE NOT related.chunk_id IN $seed_ids
+                    {doc_filter}
                     RETURN
                         related.chunk_id       AS chunk_id,
                         related.document_id    AS document_id,
@@ -148,6 +164,7 @@ class HybridRetriever:
                     LIMIT $limit
                     """,
                     seed_ids=seed_ids,
+                    document_ids=document_ids,
                     limit=self.graph_top_k,
                 )
                 records = result.data()
@@ -176,7 +193,7 @@ class HybridRetriever:
 
     # ── Merge & rank ──────────────────────────────────────────────────────────
 
-    def retrieve(self, query: str, query_embedding: list[float]) -> list[RetrievedChunk]:
+    def retrieve(self, query: str, query_embedding: list[float], document_ids: list[str] | None = None) -> list[RetrievedChunk]:
         """
         Run hybrid retrieval and return chunks sorted by descending hybrid score.
 
@@ -185,12 +202,12 @@ class HybridRetriever:
                              compatibility with future sparse/keyword augmentation).
             query_embedding: Pre-computed dense embedding of the query.
         """
-        dense_results = self._dense_search(query_embedding)
+        dense_results = self._dense_search(query_embedding, document_ids)
         if not dense_results:
             return []
 
         seed_ids = [r.chunk_id for r in dense_results]
-        graph_results = self._graph_search(seed_ids)
+        graph_results = self._graph_search(seed_ids, document_ids)
 
         max_dense = max(r.score for r in dense_results) or 1.0
 

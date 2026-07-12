@@ -25,6 +25,7 @@ class ChatService:
         message: str,
         conversation_id: str | None = None,
         search_tool: bool | None = False,
+        document_ids: list[str] | None = None,
     ) -> ChatResponse:
         # Get or create conversation
         if conversation_id:
@@ -54,6 +55,7 @@ class ChatService:
             "confidence_score": 0.0,
             "retry_count": 0,
             "search_tool": search_tool,
+            "document_ids": document_ids,
         }
         final_state = await graph.ainvoke(initial_state)
         answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."

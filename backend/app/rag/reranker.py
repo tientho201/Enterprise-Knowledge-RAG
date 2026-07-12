@@ -1,6 +1,18 @@
 """
-Cross-encoder re-ranker: selects top-K from retrieval results.
-Uses sentence-transformers cross-encoder for relevance scoring.
+Re-ranker: selects top-K from retrieval results.
+
+STOPGAP IMPLEMENTATION: sorts by the hybrid score already computed by
+HybridRetriever (dense + graph weighted merge) and truncates to top_k.
+No model load, no extra dependency, no extra cost.
+
+Trước đây dùng sentence-transformers CrossEncoder (cross-encoder/ms-marco-MiniLM-L-6-v2),
+nhưng torch/sentence-transformers đã bị loại khỏi pyproject.toml (không dùng ở đâu khác,
+~2.5GB image size). Class/interface giữ nguyên (`rerank()`, `get_reranker()`) nên
+grader_node không cần đổi gì.
+
+TODO: nếu cần chất lượng rerank tốt hơn hybrid score thô, cân nhắc:
+  - Cohere Rerank API (rẻ, không cần tự host model)
+  - Batch 1 LLM call chấm điểm tất cả chunks cùng lúc (thay vì N calls như grader hiện tại)
 """
 from functools import lru_cache
 
@@ -8,36 +20,19 @@ from app.core.config import settings
 from app.rag.retriever import RetrievedChunk
 
 
-class CrossEncoderReranker:
-    """Re-ranks retrieved chunks using a cross-encoder model."""
+class HybridScoreReranker:
+    """Re-ranks retrieved chunks by their existing hybrid score (dense+graph)."""
 
-    CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
-    def __init__(self, top_k: int = None):
+    def __init__(self, top_k: int | None = None):
         self.top_k = top_k or settings.RERANK_TOP_K
-        self._model = None
 
-    def _load_model(self):
-        if self._model is None:
-            from sentence_transformers import CrossEncoder
-            self._model = CrossEncoder(self.CROSS_ENCODER_MODEL)
-        return self._model
-
-    def rerank(self, query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    def rerank(self, query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:  # noqa: ARG002
         if not chunks:
             return []
-
-        model = self._load_model()
-        pairs = [(query, chunk.content) for chunk in chunks]
-        scores = model.predict(pairs)
-
-        for chunk, score in zip(chunks, scores):
-            chunk.score = float(score)
-
         reranked = sorted(chunks, key=lambda x: x.score, reverse=True)
         return reranked[: self.top_k]
 
 
 @lru_cache
-def get_reranker() -> CrossEncoderReranker:
-    return CrossEncoderReranker()
+def get_reranker() -> HybridScoreReranker:
+    return HybridScoreReranker()
