@@ -45,6 +45,11 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Tất cả test + async fixture dùng chung MỘT event loop session-scoped.
+# Bắt buộc vì engine async global (app/db/session.py) cache connection theo loop —
+# nếu mỗi test một loop riêng sẽ lỗi "attached to a different loop".
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["app/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
