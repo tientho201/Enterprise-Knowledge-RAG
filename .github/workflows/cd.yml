@@ -78,15 +78,18 @@ jobs:
 
   # ─────────────────────────────────────────────
   # JOB 2: Deploy
+  # TẮT theo mặc định — chưa có server production. Job này bị SKIP cho tới khi
+  # bạn tạo repository variable DEPLOY_ENABLED=true (Settings → Secrets and
+  # variables → Actions → Variables). Khi bật, nhớ set kèm 3 secrets:
+  #   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY
   # DB migrations (Alembic) chạy TRÊN SERVER trong bước deploy bên dưới,
   # dùng DATABASE_URL từ .env.prod trên server — không cần secret GitHub.
-  # Điền thông tin server của bạn vào secrets:
-  #   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY
   # ─────────────────────────────────────────────
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
     needs: build-push
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
     timeout-minutes: 15
     permissions:
       contents: read
