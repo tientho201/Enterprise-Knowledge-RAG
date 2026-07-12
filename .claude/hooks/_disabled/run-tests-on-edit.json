@@ -1,0 +1,6 @@
+{
+  "_disabled_reason": "Chạy full pytest suite trên mỗi Write/Edit sẽ rất chậm (đặc biệt integration tests cần Redis+Neo4j) và làm gián đoạn workflow. Test nên chạy qua CI (.github/workflows/ci.yml) hoặc thủ công qua skill 'testing' khi cần, không phải tự động mỗi lần sửa 1 dòng code. File này giữ lại làm tham khảo cấu trúc, không active (đã chuyển ra khỏi .claude/hooks/ để tránh vô tình bị load).",
+  "hookType": "PostToolUse",
+  "matcher": "Write|Edit",
+  "command": "cd backend && uv run pytest app/tests/unit/ -q"
+}

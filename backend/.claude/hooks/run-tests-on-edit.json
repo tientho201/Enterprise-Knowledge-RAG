@@ -1,5 +1,0 @@
-{
-  "hookType": "PostToolUse",
-  "matcher": "Write|Edit",
-  "command": "your test command here"
-}

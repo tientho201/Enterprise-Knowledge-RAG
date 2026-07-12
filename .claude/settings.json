@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(pytest *)",
+      "Bash(docker compose *)",
+      "Bash(alembic *)",
+      "Bash(bash .claude/hooks/*)",
+      "Bash(npx prettier *)",
+      "Bash(npm run lint)",
+      "Bash(npm run typecheck)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)"
+    ]
+  }
+}

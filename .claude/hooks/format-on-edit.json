@@ -1,0 +1,5 @@
+{
+  "hookType": "PostToolUse",
+  "matcher": "Write|Edit",
+  "command": "bash .claude/hooks/scripts/format-changed.sh"
+}

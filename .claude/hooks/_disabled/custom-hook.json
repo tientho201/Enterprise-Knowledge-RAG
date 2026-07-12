@@ -1,0 +1,6 @@
+{
+  "_disabled_reason": "Placeholder chưa từng được điền nội dung thật (matcher và command đều là text mẫu). Giữ lại làm ví dụ cấu trúc custom hook nếu sau này cần, không active.",
+  "hookType": "Custom",
+  "matcher": "your_custom_event",
+  "command": "your custom command here"
+}

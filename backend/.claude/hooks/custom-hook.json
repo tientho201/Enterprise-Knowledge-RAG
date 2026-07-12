@@ -1,5 +1,0 @@
-{
-  "hookType": "Custom",
-  "matcher": "your_custom_event",
-  "command": "your custom command here"
-}
