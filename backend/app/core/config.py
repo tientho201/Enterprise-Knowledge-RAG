@@ -103,6 +103,19 @@ class Settings(BaseSettings):
             return json.loads(v)
         return v
 
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def _validate_database_url(cls, v: str) -> str:
+        # Env rỗng (vd secret DATABASE_URL chưa set trong CD) ghi đè default thành ""
+        # → create_async_engine sẽ ném "Could not parse SQLAlchemy URL". Fail sớm với thông điệp rõ.
+        if not v or not v.strip():
+            raise ValueError(
+                "DATABASE_URL is empty. Set it via environment/secret "
+                "(e.g. the 'DATABASE_URL' secret of the GitHub 'production' environment "
+                "for the CD migrate job)."
+            )
+        return v
+
 
 @lru_cache
 def get_settings() -> Settings:
