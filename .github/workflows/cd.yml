@@ -77,49 +77,16 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ─────────────────────────────────────────────
-  # JOB 2: Run DB migrations (Alembic)
-  # ─────────────────────────────────────────────
-  migrate:
-    name: DB migrations
-    runs-on: ubuntu-latest
-    needs: build-push
-    environment: production
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: backend
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "0.5.x"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install production dependencies
-        run: uv sync --frozen --no-dev
-
-      - name: Run Alembic migrations
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run alembic upgrade head
-
-  # ─────────────────────────────────────────────
-  # JOB 3: Deploy
+  # JOB 2: Deploy
+  # DB migrations (Alembic) chạy TRÊN SERVER trong bước deploy bên dưới,
+  # dùng DATABASE_URL từ .env.prod trên server — không cần secret GitHub.
   # Điền thông tin server của bạn vào secrets:
   #   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY
   # ─────────────────────────────────────────────
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    needs: [migrate, build-push]
+    needs: build-push
     timeout-minutes: 15
     permissions:
       contents: read
@@ -156,6 +123,10 @@ jobs:
               docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             docker compose -f docker-compose.prod.yml pull api worker beat
+
+            # DB migrations — chạy trên server, dùng DATABASE_URL trong .env.prod
+            docker compose -f docker-compose.prod.yml run --rm --no-deps api \
+              uv run alembic upgrade head
 
             docker compose -f docker-compose.prod.yml up -d \
               --remove-orphans \
