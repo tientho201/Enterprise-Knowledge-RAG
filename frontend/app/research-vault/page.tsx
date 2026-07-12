@@ -74,7 +74,7 @@ export default function ResearchVault() {
 
     try {
       const { chatAPI } = await import("@/lib/api")
-      const response = await chatAPI.sendMessage(searchQuery)
+      const response = await chatAPI.sendMessage(searchQuery, null, false, selectedDocIds)
       
       // Convert citations to search results
       const results: SearchResult[] = (response.message.citations || []).map((c, idx) => ({

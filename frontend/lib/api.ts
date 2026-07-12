@@ -4,6 +4,12 @@
 
 const BASE_URL = "http://localhost:8000"; // Directly calls backend API
 
+// ============================================================
+// MOCK MODE — Set to true to bypass backend (dev/demo only)
+// Credentials: admin@enterprise.com / admin123
+// ============================================================
+export const MOCK_MODE = true;
+
 // --------------- Token helpers ---------------
 
 export function getAccessToken(): string | null {
@@ -259,7 +265,12 @@ export const authAPI = {
 // ============================================================
 
 export const chatAPI = {
-  async sendMessage(message: string, conversation_id?: string | null, search_tool?: boolean | null): Promise<ChatResponse> {
+  async sendMessage(
+    message: string,
+    conversation_id?: string | null,
+    search_tool?: boolean | null,
+    document_ids?: string[] | null
+  ): Promise<ChatResponse> {
     const res = await apiFetch("/api/v1/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -267,6 +278,7 @@ export const chatAPI = {
         message,
         conversation_id: conversation_id || null,
         search_tool: search_tool !== undefined ? search_tool : null,
+        documentIds: document_ids || null,
       }),
     });
     return handleResponse<ChatResponse>(res);

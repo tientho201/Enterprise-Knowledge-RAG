@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { useApp } from "@/lib/context"
-import { getAccessToken } from "@/lib/api"
+import { getAccessToken, MOCK_MODE } from "@/lib/api"
 import Sidebar from "@/components/Sidebar"
 import { RefreshCw } from "lucide-react"
 
@@ -21,11 +21,12 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     if (!isMounted || isAuthLoading) return
 
     const isAuthPage = pathname === "/login" || pathname === "/register"
-    const hasToken = !!getAccessToken()
+    // In MOCK_MODE, use user state; otherwise check localStorage token
+    const isLoggedIn = MOCK_MODE ? !!user : !!getAccessToken()
 
-    if (!hasToken && !isAuthPage) {
+    if (!isLoggedIn && !isAuthPage) {
       router.push("/login")
-    } else if (hasToken && isAuthPage) {
+    } else if (isLoggedIn && isAuthPage) {
       router.push("/")
     }
   }, [user, pathname, isMounted, isAuthLoading, router])
@@ -41,10 +42,11 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   const isAuthPage = pathname === "/login" || pathname === "/register"
-  const hasToken = !!getAccessToken()
+  // In MOCK_MODE, use user state; otherwise check localStorage token
+  const isLoggedIn = MOCK_MODE ? !!user : !!getAccessToken()
 
   // If not logged in and not on login/register page, show loading while redirecting
-  if (!hasToken && !isAuthPage) {
+  if (!isLoggedIn && !isAuthPage) {
     return (
       <div className="h-screen w-screen bg-[#0a0a0a] flex flex-col items-center justify-center text-neutral-400 gap-4">
         <RefreshCw className="w-8 h-8 animate-spin text-emerald-400/60" />
@@ -54,7 +56,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   // If logged in and on login/register page, show loading while redirecting to home
-  if (hasToken && isAuthPage) {
+  if (isLoggedIn && isAuthPage) {
     return (
       <div className="h-screen w-screen bg-[#0a0a0a] flex flex-col items-center justify-center text-neutral-400 gap-4">
         <RefreshCw className="w-8 h-8 animate-spin text-emerald-400/60" />

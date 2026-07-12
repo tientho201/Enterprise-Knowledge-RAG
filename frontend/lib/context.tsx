@@ -10,6 +10,7 @@ import {
   getAccessToken,
   setTokens,
   ApiError,
+  MOCK_MODE,
   type AuthUser,
   type Document,
   type ConversationSummary,
@@ -286,7 +287,13 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     try {
       const data = await documentsAPI.list(1, 100)
       setDocuments(data.items)
-      setActiveDocs(data.items.filter(d => d.status === "indexed").map(d => d.id))
+      
+      // Only set activeDocs to default if not already configured in localStorage for current session
+      const currentActiveId = localStorage.getItem("active_session_id") || "new";
+      const saved = localStorage.getItem(`active_docs_${currentActiveId}`);
+      if (!saved) {
+        setActiveDocs(data.items.filter(d => d.status === "indexed").map(d => d.id))
+      }
     } catch (err) {
       console.error("Failed to load documents:", err)
     }
@@ -351,6 +358,19 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     if (initializedRef.current) return
     initializedRef.current = true
 
+    // MOCK MODE: auto-login without backend
+    if (MOCK_MODE) {
+      setUser({
+        id: "mock-user-001",
+        name: "Admin User",
+        email: "admin@enterprise.com",
+        role: "admin",
+        avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=Admin`,
+      })
+      setIsAuthLoading(false)
+      return
+    }
+
     const token = getAccessToken()
     if (!token) {
       setIsAuthLoading(false)
@@ -388,6 +408,36 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       }
     }
   }, [activeSessionId])
+
+  // Load activeDocs for the newly active session
+  useEffect(() => {
+    if (!activeSessionId) return;
+    
+    // Read from localStorage
+    const saved = localStorage.getItem(`active_docs_${activeSessionId}`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setActiveDocs(parsed);
+          return;
+        }
+      } catch (e) {
+        // ignore JSON parse errors
+      }
+    }
+    
+    // Default to all indexed documents if not found in localStorage
+    const indexedDocIds = documents.filter(d => d.status === "indexed").map(d => d.id);
+    setActiveDocs(indexedDocIds);
+  }, [activeSessionId, documents]);
+
+  // Save activeDocs to localStorage whenever it changes for the active session
+  useEffect(() => {
+    if (!activeSessionId || (activeSessionId.startsWith("new-") && activeDocs.length === 0)) return;
+    
+    localStorage.setItem(`active_docs_${activeSessionId}`, JSON.stringify(activeDocs));
+  }, [activeDocs, activeSessionId]);
 
   // ============================================================
   // Auth Operations
@@ -458,6 +508,9 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
 
   const handleDeleteSession = async (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation()
+
+    // Delete from localStorage
+    localStorage.removeItem(`active_docs_${id}`);
 
     // Delete from backend if it's a real conversation
     if (!id.startsWith("new-")) {
@@ -530,11 +583,17 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     try {
       // 3. Call API
       const conversationId = currentSession.id.startsWith("new-") ? null : currentSession.id
-      const response = await chatAPI.sendMessage(messageText, conversationId, searchTool)
+      const response = await chatAPI.sendMessage(messageText, conversationId, searchTool, activeDocs)
 
       // 4. If this was a new session, update the session ID in state and activeSessionId immediately
       const realConvId = response.conversation_id
       if (currentSession.id.startsWith("new-")) {
+        // Migrate active docs in localStorage
+        const savedDocs = localStorage.getItem(`active_docs_${currentSession.id}`);
+        if (savedDocs) {
+          localStorage.setItem(`active_docs_${realConvId}`, savedDocs);
+          localStorage.removeItem(`active_docs_${currentSession.id}`);
+        }
         setChatSessions(prev => prev.map(s =>
           s.id === currentSession.id
             ? { ...s, id: realConvId }
