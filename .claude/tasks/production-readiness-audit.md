@@ -1,6 +1,6 @@
 # Production Readiness Audit
 
-Cập nhật lần cuối: 2026-07-14 (session 1 — audit khởi tạo + bắt đầu fix)
+Cập nhật lần cuối: 2026-07-14 (session 1 — audit + fix xong toàn bộ mục code-fixable)
 
 Nguồn chân lý kiến trúc: `.claude/skills/enterprise-knowledge-rag/SKILL.md`.
 Checklist gốc viết từ snapshot cũ — mọi mục dưới đây đã được **verify lại bằng code thật**,
@@ -45,34 +45,34 @@ không tin mù checklist.
 
 ## Đã Fixed
 
-_(chưa có — session này bắt đầu từ đây)_
+- [x] **.gitignore thiếu `.env.prod`** — `backend/.gitignore`: thêm `.env.prod` + `.env.*`
+  (giữ `!.env.example`). Commit `fix: harden prod config`.
+- [x] **SECRET_KEY production guard** — `backend/app/core/config.py`: `model_validator` chặn
+  deploy khi `APP_ENV=production` mà SECRET_KEY default/yếu (<32 chars) hoặc `DEBUG=true`.
+  Verified: dev pass, prod+weak fail, prod+strong pass. Commit `fix: harden prod config`.
+- [x] **Health check thật (DB + Redis + Qdrant)** — `backend/app/main.py`: ping DB (`SELECT 1`),
+  Redis (`PING`), Qdrant (`get_collections` trong executor), gather song song, trả 503
+  `degraded` + per-component status nếu có service down. Thêm `app/core/redis_client.py`
+  (async redis client cached, không thêm dep). Verified end-to-end qua TestClient (503 khi
+  Qdrant down, body có components). Commit `fix: implement real health check`.
+- [x] **JWT blacklist cho logout** — `security.py` thêm `jti` vào token; `token_blacklist.py`
+  lưu jti vào Redis với TTL tới `exp`; `dependencies.py` check blacklist → 401; `POST
+  /auth/logout` (idempotent 204). Verified e2e. Commit `feat: JWT logout with Redis blacklist`.
+- [x] **Rate limiting `/chat` + `/documents/upload`** — `rate_limit.py` limiter Redis
+  fixed-window (per-user, fail-open, 429 + Retry-After), gắn vào 2 route. Limits tunable trong
+  config (`CHAT_RATE_LIMIT_PER_MINUTE=20`, `UPLOAD_RATE_LIMIT_PER_MINUTE=10`). Verified (3
+  allowed / 2 blocked). Commit `feat: rate limiting`.
+- [x] **Review DB_POOL_SIZE vs tổng connections** — Đã phân tích: API(4 workers)≈60 +
+  Celery worker(prefork 4, cùng async engine qua asyncio.run)≈60 ≈ 120 client conn. **Chấp
+  nhận được** vì cổng 6543 (Supavisor transaction-mode) multiplex xuống ít Postgres backend;
+  "60" free tier là giới hạn phía Postgres, không phải client. KHÔNG đổi số (tránh giảm
+  throughput). Đã thêm comment cảnh báo trong `config.py`: nếu đổi sang 5432 trực tiếp phải giảm.
+  Commit `docs: document DB pool connection math`.
 
 ## Đang Pending — làm tiếp từ đây
 
-Thứ tự ưu tiên (code-fixable):
-
-- [ ] **Health check thật (DB + Redis + Qdrant)** — `backend/app/main.py` hiện trả cứng
-  `{"status":"ok"}`. CD dùng `/health` để xác nhận deploy → không đáng tin. CẦN: ping DB
-  (`SELECT 1`), Redis (`PING`), Qdrant (`get_collections`), trả 503 nếu bất kỳ service down.
-  Redis async client: dùng `redis.asyncio` (redis>=5 đã là dependency, không thêm dep mới).
-  Qdrant: `get_qdrant_client().get_collections()` wrap trong executor (client sync).
-- [ ] **Rate limiting cho `/chat` và `/documents/upload`** — chưa có. Rủi ro cost OpenAI/abuse.
-  Kế hoạch: limiter dependency dựa trên Redis INCR + expiry (tái dùng `redis.asyncio`, KHÔNG
-  thêm slowapi để tránh churn dependency/lock + phụ thuộc network resolve). Áp per-user/per-IP.
-- [ ] **JWT blacklist cho logout** — `app/api/auth.py` chỉ có register/login/refresh/me, KHÔNG
-  có logout. CẦN: `POST /auth/logout` đẩy jti/token vào Redis blacklist (TTL = thời gian còn
-  lại của token), `get_current_user_id` check blacklist. (Cần thêm `jti`+`exp` vào token payload
-  trong `security.py`.)
-- [ ] **.gitignore thiếu `.env.prod`** — `docker-compose.prod.yml` đọc `.env.prod` nhưng
-  `.gitignore` chỉ có `.env`, `.env.local` (pattern `.env` KHÔNG match `.env.prod`). Thêm
-  `.env.prod` + `.env.*` để tránh commit nhầm secret production. (Nhỏ, an toàn.)
-- [ ] **SECRET_KEY production guard** — `config.py` default `SECRET_KEY="changeme"`. Thêm
-  validator: nếu `APP_ENV=production` mà SECRET_KEY còn là default/yếu (<32 chars) → fail sớm.
-  Không tự sinh secret (đó là việc user), chỉ chặn deploy với secret rác.
-- [ ] **Review DB_POOL_SIZE vs tổng connections** — pool_size=5 + overflow=10 = 15/process.
-  API 4 uvicorn workers → peak 60 chỉ riêng API, cộng worker(concurrency=4)+beat. Cần xác nhận
-  PgBouncer transaction mode (6543) đủ multiplex hay phải giảm số. Đánh giá, chỉ đổi nếu thật sự
-  rủi ro (tránh giảm throughput vô cớ).
+_(Hết mục code-fixable trong session 1 — tất cả đã chuyển sang Đã Fixed. Session sau: cân nhắc
+các mục technical-debt còn lại trong SKILL.md nếu muốn tiếp tục hardening — xem cuối file.)_
 
 ## Blocked — cần user làm thủ công (không thể fix bằng code)
 
@@ -87,3 +87,19 @@ Thứ tự ưu tiên (code-fixable):
 - [ ] **Bật deploy job + provisioning server** — `cd.yml` deploy job skip tới khi tạo repo
   variable `DEPLOY_ENABLED=true` + 3 secrets `DEPLOY_HOST`/`DEPLOY_USER`/`DEPLOY_SSH_KEY`, và
   chuẩn bị server có `.env.prod` tại `/opt/rag`. Việc SSH/tạo secret nằm ngoài khả năng code.
+
+---
+
+## Gợi ý cho session sau (hardening tiếp — nằm ngoài checklist gốc)
+
+Checklist production-readiness gốc đã xong toàn bộ phần code-fixable. Nếu muốn hardening tiếp,
+các mục technical-debt còn lại trong `SKILL.md` (chưa động tới trong audit này):
+- Enforce RBAC ở route upload/delete/reindex (hiện chỉ admin dashboard) — **security, ưu tiên cao**.
+- `list_documents()` filter theo user (data isolation multi-user) — **security, ưu tiên cao**.
+- Citations lưu bằng HTML comment thay vì bảng `citations` (fragile).
+- `_dense_search()` chuyển từ httpx thủ công sang `qdrant_client` SDK.
+- SSE streaming cho `/chat`; nạp conversation history vào `AgentState` (multi-turn).
+
+Lệnh tiếp tục: mở Claude Code, chạy → "đọc .claude/tasks/production-readiness-audit.md và
+tiếp tục từ mục Pending đầu tiên" (hiện Pending code-fixable đã hết → chuyển sang mục hardening
+ở trên hoặc xử lý các mục Blocked cần thao tác thủ công).

@@ -96,15 +96,19 @@ Flow: `router → (retriever → grader → [rewrite loop, max 2] →) generator
 |---|---|---|
 | Citations lưu bằng HTML comment `<!--citations:{json}-->` nhúng vào `message.content`, parse lại bằng regex | `backend/app/services/chat_service.py` | Fragile — bảng `citations` đã có nhưng dùng sai cách |
 | `_dense_search()` dùng `httpx.Client` build REST request thủ công thay vì `qdrant_client` SDK | `backend/app/rag/retriever.py` | Dư thừa, dễ lỗi khi Qdrant đổi API |
-| Health check trả `{"status": "ok"}` cứng, không check DB/Redis/Qdrant | `backend/app/main.py` | CD dùng health check để xác nhận deploy — hiện không đáng tin |
-| Chưa có rate limiting cho `/chat`, `/documents/upload` | — | Rủi ro cost OpenAI |
 | RBAC (`admin/editor/viewer`) chỉ enforce ở admin dashboard, chưa enforce upload/delete/reindex | `backend/app/api/admin.py` vs các route khác | Data/permission risk |
 | `list_documents()` không filter theo user | `backend/app/services/document_service.py` | Data isolation issue multi-user |
 | SSE streaming cho `/chat` chưa implement — block đến khi graph chạy xong | `backend/app/api/chat.py` | UX |
 | Conversation history không được nạp vào `AgentState` — mỗi câu hỏi xử lý độc lập | `backend/app/services/chat_service.py` | Thiếu multi-turn |
 | Connectors Confluence/Slack/Google Drive: model có enum nhưng code trống | `backend/app/connectors/` | Chưa implement |
 | Reranker là stopgap (sort theo hybrid score, không phải model rerank thật) | `backend/app/rag/reranker.py` | Chất lượng rerank có thể chưa tối ưu |
-| File `user-EKRag_accessKeys.csv` từng thấy ở root `backend/` — xác nhận đã xử lý/xóa và có trong `.gitignore` chưa | — | Bảo mật, cần double-check |
+
+**Đã fix (production-readiness audit, xem `.claude/tasks/production-readiness-audit.md`):**
+- ✅ Health check thật (ping DB/Redis/Qdrant, trả 503 nếu down) — `backend/app/main.py` + `app/core/redis_client.py`.
+- ✅ Rate limiting `/chat` + `/documents/upload` (Redis fixed-window, fail-open) — `backend/app/core/rate_limit.py`.
+- ✅ JWT logout + Redis blacklist (`jti` trong token, `POST /auth/logout`) — `app/core/token_blacklist.py`, `app/api/auth.py`.
+- ✅ Config hardening: guard SECRET_KEY/DEBUG khi `APP_ENV=production`; `.gitignore` thêm `.env.prod`.
+- ✅ File `user-EKRag_accessKeys.csv`: xác nhận KHÔNG được git track (`git ls-files` sạch); `.gitignore` có `*.csv`.
 
 ## CI/CD — đã fix vị trí (từng là bug: workflow nằm sai chỗ)
 
