@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     DENSE_WEIGHT: float = 0.7
     GRAPH_WEIGHT: float = 0.3
 
+    # ── Rate limiting (Redis fixed-window, per-user) ──────────────────────────
+    # Chặn abuse + kiểm soát cost OpenAI. Fail-open nếu Redis down (không chặn request).
+    CHAT_RATE_LIMIT_PER_MINUTE: int = 20
+    UPLOAD_RATE_LIMIT_PER_MINUTE: int = 10
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]
 

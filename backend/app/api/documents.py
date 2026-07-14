@@ -1,13 +1,22 @@
-from fastapi import APIRouter, Query, UploadFile
+from fastapi import APIRouter, Depends, Query, UploadFile
 
+from app.core.config import settings
 from app.core.dependencies import CurrentUserIdDep, DbDep
+from app.core.rate_limit import rate_limiter
 from app.schemas.document import DocumentListResponse, DocumentResponse, ReindexRequest
 from app.services.document_service import DocumentService
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
-@router.post("/upload", response_model=DocumentResponse, status_code=202)
+@router.post(
+    "/upload",
+    response_model=DocumentResponse,
+    status_code=202,
+    dependencies=[
+        Depends(rate_limiter(settings.UPLOAD_RATE_LIMIT_PER_MINUTE, 60, "upload")),
+    ],
+)
 async def upload_document(file: UploadFile, user_id: CurrentUserIdDep, db: DbDep):
     """Upload a document. Raw file → S3. Metadata → Supabase. Ingestion dispatched async."""
     service = DocumentService(db)

@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.core.config import settings
 from app.core.dependencies import CurrentUserIdDep, DbDep
+from app.core.rate_limit import rate_limiter
 from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
@@ -12,7 +14,13 @@ from app.services.chat_service import ChatService
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-@router.post("", response_model=ChatResponse)
+@router.post(
+    "",
+    response_model=ChatResponse,
+    dependencies=[
+        Depends(rate_limiter(settings.CHAT_RATE_LIMIT_PER_MINUTE, 60, "chat")),
+    ],
+)
 async def chat(body: ChatRequest, user_id: CurrentUserIdDep, db: DbDep):
     import logging
 
