@@ -1,11 +1,17 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.api import admin, audit_logs, auth, chat, documents
 from app.core.config import settings
+from app.core.redis_client import get_redis
+from app.db.session import AsyncSessionLocal
+from app.rag.retriever import get_qdrant_client
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -48,9 +54,58 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["health"])
     async def health_check():
-        return {"status": "ok", "app": settings.APP_NAME, "env": settings.APP_ENV}
+        """Liveness + readiness: ping DB, Redis, Qdrant. Trả 503 nếu bất kỳ service down.
+
+        CD (`cd.yml`) dùng endpoint này để xác nhận deploy — phải phản ánh trạng thái thật.
+        """
+        checks = await asyncio.gather(
+            _check_db(),
+            _check_redis(),
+            _check_qdrant(),
+            return_exceptions=False,
+        )
+        components = dict(checks)
+        healthy = all(v == "ok" for v in components.values())
+        body = {
+            "status": "ok" if healthy else "degraded",
+            "app": settings.APP_NAME,
+            "env": settings.APP_ENV,
+            "components": components,
+        }
+        if not healthy:
+            return JSONResponse(status_code=503, content=body)
+        return body
 
     return app
+
+
+async def _check_db() -> tuple[str, str]:
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        return "database", "ok"
+    except Exception as exc:  # noqa: BLE001 — health check phải nuốt mọi lỗi
+        logger.warning("Health check DB failed: %s", exc)
+        return "database", "down"
+
+
+async def _check_redis() -> tuple[str, str]:
+    try:
+        await get_redis().ping()
+        return "redis", "ok"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Health check Redis failed: %s", exc)
+        return "redis", "down"
+
+
+async def _check_qdrant() -> tuple[str, str]:
+    # QdrantClient là sync → chạy trong executor để không block event loop.
+    try:
+        await asyncio.to_thread(get_qdrant_client().get_collections)
+        return "qdrant", "ok"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Health check Qdrant failed: %s", exc)
+        return "qdrant", "down"
 
 
 app = create_app()
