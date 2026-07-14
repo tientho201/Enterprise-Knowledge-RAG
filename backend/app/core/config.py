@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -115,6 +115,22 @@ class Settings(BaseSettings):
                 "for the CD migrate job)."
             )
         return v
+
+    @model_validator(mode="after")
+    def _guard_production_secrets(self) -> "Settings":
+        # Ở production, chặn deploy với secret rác / mặc định. Không tự sinh secret —
+        # đó là việc của user (openssl rand -hex 32 → .env.prod / secrets manager).
+        if self.APP_ENV.lower() == "production":
+            weak = {"changeme", "your-super-secret-key-change-in-production", ""}
+            if self.SECRET_KEY.strip() in weak or len(self.SECRET_KEY.strip()) < 32:
+                raise ValueError(
+                    "SECRET_KEY is weak/default while APP_ENV=production. "
+                    "Set a strong random value (e.g. `openssl rand -hex 32`) via "
+                    "environment/secret before deploying."
+                )
+            if self.DEBUG:
+                raise ValueError("DEBUG must be false when APP_ENV=production.")
+        return self
 
 
 @lru_cache
