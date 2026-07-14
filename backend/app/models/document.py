@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, Integer, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDMixin
@@ -34,6 +34,11 @@ class Document(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "documents"
 
     name: Mapped[str] = mapped_column(String(500), nullable=False)
+    # Chủ sở hữu (người upload). Nullable: (a) document legacy tạo trước khi có cột này,
+    # (b) SET NULL khi user bị xóa. Doc owner=NULL chỉ admin thấy/quản lý (data isolation).
+    owner_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     type: Mapped[DocumentType] = mapped_column(Enum(DocumentType), nullable=False)
     status: Mapped[DocumentStatus] = mapped_column(
         Enum(DocumentStatus), nullable=False, default=DocumentStatus.pending

@@ -23,6 +23,7 @@ class DocumentRepository:
         storage_path: str | None = None,
         source: str | None = None,
         file_size: int | None = None,
+        owner_id: str | None = None,
     ) -> Document:
         doc = Document(
             name=name,
@@ -30,6 +31,7 @@ class DocumentRepository:
             storage_path=storage_path,
             source=source,
             file_size=file_size,
+            owner_id=owner_id,
         )
         self.db.add(doc)
         await self.db.flush()
@@ -58,8 +60,13 @@ class DocumentRepository:
             return True
         return False
 
-    async def list_active(self, skip: int = 0, limit: int = 20) -> tuple[list[Document], int]:
+    async def list_active(
+        self, skip: int = 0, limit: int = 20, owner_id: str | None = None
+    ) -> tuple[list[Document], int]:
+        """List active docs. `owner_id=None` → tất cả (admin); có giá trị → chỉ doc của user đó."""
         base_query = select(Document).where(Document.deleted_at.is_(None))
+        if owner_id is not None:
+            base_query = base_query.where(Document.owner_id == owner_id)
         count_result = await self.db.execute(
             select(func.count()).select_from(base_query.subquery())
         )

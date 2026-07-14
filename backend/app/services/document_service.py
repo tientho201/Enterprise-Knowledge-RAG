@@ -65,6 +65,7 @@ class DocumentService:
             doc_type=doc_type,
             storage_path=object_name,  # S3 object key — used by Celery task to download
             file_size=len(file_bytes),
+            owner_id=user_id,  # data isolation: gắn chủ sở hữu = người upload
         )
 
         # 3. Write audit log to Supabase
@@ -86,17 +87,32 @@ class DocumentService:
 
         return DocumentResponse.model_validate(doc)
 
+    # ── Ownership guard (data isolation) ──────────────────────────────────────
+
+    async def _get_owned_or_404(self, doc_id: str, user_id: str, is_admin: bool):
+        """Fetch document + enforce ownership.
+
+        Trả 404 (KHÔNG 403) khi doc không tồn tại HOẶC user không phải chủ sở hữu — để
+        không lộ sự tồn tại của doc người khác. Admin bỏ qua check (thấy/quản lý tất cả).
+        """
+        doc = await self.repo.get_by_id(doc_id)
+        if not doc or (not is_admin and doc.owner_id != user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        return doc
+
     # ── Read ─────────────────────────────────────────────────────────────────
 
-    async def get(self, doc_id: str) -> DocumentResponse:
-        doc = await self.repo.get_by_id(doc_id)
-        if not doc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    async def get(self, doc_id: str, user_id: str, is_admin: bool = False) -> DocumentResponse:
+        doc = await self._get_owned_or_404(doc_id, user_id, is_admin)
         return DocumentResponse.model_validate(doc)
 
-    async def list_documents(self, page: int = 1, page_size: int = 20) -> DocumentListResponse:
+    async def list_documents(
+        self, user_id: str, is_admin: bool = False, page: int = 1, page_size: int = 20
+    ) -> DocumentListResponse:
         skip = (page - 1) * page_size
-        docs, total = await self.repo.list_active(skip=skip, limit=page_size)
+        # Admin: owner_id=None → thấy tất cả. Ngược lại: chỉ doc của chính user.
+        owner_filter = None if is_admin else user_id
+        docs, total = await self.repo.list_active(skip=skip, limit=page_size, owner_id=owner_filter)
         return DocumentListResponse(
             items=[DocumentResponse.model_validate(d) for d in docs],
             total=total,
@@ -104,14 +120,14 @@ class DocumentService:
             page_size=page_size,
         )
 
-    async def get_download_url(self, doc_id: str, expires_seconds: int = 3600) -> str:
+    async def get_download_url(
+        self, doc_id: str, user_id: str, is_admin: bool = False, expires_seconds: int = 3600
+    ) -> str:
         """
         Generate a presigned S3 URL so the frontend can download the raw file directly
         without proxying through the API server.
         """
-        doc = await self.repo.get_by_id(doc_id)
-        if not doc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        doc = await self._get_owned_or_404(doc_id, user_id, is_admin)
         if not doc.storage_path:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -121,14 +137,12 @@ class DocumentService:
 
     # ── Delete ────────────────────────────────────────────────────────────────
 
-    async def delete(self, doc_id: str, user_id: str | None = None) -> None:
+    async def delete(self, doc_id: str, user_id: str, is_admin: bool = False) -> None:
         """
         Soft-delete metadata in Supabase first, then queue S3 + vector cleanup via Celery.
         S3 deletion is best-effort — handled in background task.
         """
-        doc = await self.repo.get_by_id(doc_id)
-        if not doc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        doc = await self._get_owned_or_404(doc_id, user_id, is_admin)
 
         doc_name = doc.name
         storage_path = doc.storage_path
@@ -152,14 +166,12 @@ class DocumentService:
 
     # ── Reindex ───────────────────────────────────────────────────────────────
 
-    async def reindex(self, doc_id: str, user_id: str | None = None) -> DocumentResponse:
+    async def reindex(self, doc_id: str, user_id: str, is_admin: bool = False) -> DocumentResponse:
         """
         Queue a full reindex: delete old vectors → re-download from S3 → re-ingest.
         S3 file is NOT deleted — only vector stores are cleared.
         """
-        doc = await self.repo.get_by_id(doc_id)
-        if not doc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        doc = await self._get_owned_or_404(doc_id, user_id, is_admin)
         if not doc.storage_path:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
