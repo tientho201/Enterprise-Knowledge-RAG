@@ -24,8 +24,13 @@ class Settings(BaseSettings):
     # Format:  postgresql+asyncpg://postgres.[PROJECT-REF]:[PASSWORD]@...pooler.supabase.com:6543/postgres
     # Dùng port 6543 (PgBouncer transaction mode) thay vì 5432 để tránh vượt connection limit
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/enterprise_rag"
-    DB_POOL_SIZE: int = 5  # Supabase free tier: tối đa 60 connections
-    DB_MAX_OVERFLOW: int = 10  # 5 pool + 10 overflow = 15 per worker instance
+    # Pool 15/process (5 + 10 overflow). Tổng peak: API (--workers 4) ≈ 60 + Celery worker
+    # (prefork concurrency 4, dùng cùng async engine qua asyncio.run) ≈ 60 = ~120 client conn.
+    # CHỈ an toàn vì dùng cổng 6543 (Supavisor transaction-mode pooler) — pooler multiplex
+    # nhiều client conn xuống ít Postgres backend; "60" của free tier là giới hạn phía Postgres.
+    # ⚠️ Nếu đổi sang cổng trực tiếp 5432 (không pooler) PHẢI giảm mạnh 2 số này.
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
 
     # ── AWS S3 — Raw document storage ─────────────────────────────────────────
     # Lưu trữ: raw files (PDF, DOCX, TXT) upload bởi người dùng
