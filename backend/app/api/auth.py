@@ -1,6 +1,11 @@
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.dependencies import CurrentUserIdDep, DbDep
+from app.core.security import decode_token
+from app.core.token_blacklist import blacklist_token
 from app.schemas.auth import (
     LoginRequest,
     RefreshTokenRequest,
@@ -11,6 +16,7 @@ from app.schemas.auth import (
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+_bearer = HTTPBearer()
 
 
 @router.post("/register", response_model=UserResponse, status_code=201)
@@ -35,3 +41,16 @@ async def refresh(body: RefreshTokenRequest, db: DbDep):
 async def me(user_id: CurrentUserIdDep, db: DbDep):
     service = AuthService(db)
     return await service.get_current_user(user_id)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer)],
+):
+    """Thu hồi access token hiện tại — đẩy jti vào Redis blacklist tới khi token hết hạn.
+
+    Idempotent: token không hợp lệ / đã hết hạn vẫn trả 204 (không lộ thông tin token).
+    """
+    payload = decode_token(credentials.credentials)
+    if payload and payload.get("jti") and payload.get("exp"):
+        await blacklist_token(payload["jti"], payload["exp"])
