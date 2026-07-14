@@ -96,8 +96,6 @@ Flow: `router → (retriever → grader → [rewrite loop, max 2] →) generator
 |---|---|---|
 | Citations lưu bằng HTML comment `<!--citations:{json}-->` nhúng vào `message.content`, parse lại bằng regex | `backend/app/services/chat_service.py` | Fragile — bảng `citations` đã có nhưng dùng sai cách |
 | `_dense_search()` dùng `httpx.Client` build REST request thủ công thay vì `qdrant_client` SDK | `backend/app/rag/retriever.py` | Dư thừa, dễ lỗi khi Qdrant đổi API |
-| RBAC (`admin/editor/viewer`) chỉ enforce ở admin dashboard, chưa enforce upload/delete/reindex | `backend/app/api/admin.py` vs các route khác | Data/permission risk |
-| `list_documents()` không filter theo user | `backend/app/services/document_service.py` | Data isolation issue multi-user |
 | SSE streaming cho `/chat` chưa implement — block đến khi graph chạy xong | `backend/app/api/chat.py` | UX |
 | Conversation history không được nạp vào `AgentState` — mỗi câu hỏi xử lý độc lập | `backend/app/services/chat_service.py` | Thiếu multi-turn |
 | Connectors Confluence/Slack/Google Drive: model có enum nhưng code trống | `backend/app/connectors/` | Chưa implement |
@@ -109,6 +107,13 @@ Flow: `router → (retriever → grader → [rewrite loop, max 2] →) generator
 - ✅ JWT logout + Redis blacklist (`jti` trong token, `POST /auth/logout`) — `app/core/token_blacklist.py`, `app/api/auth.py`.
 - ✅ Config hardening: guard SECRET_KEY/DEBUG khi `APP_ENV=production`; `.gitignore` thêm `.env.prod`.
 - ✅ File `user-EKRag_accessKeys.csv`: xác nhận KHÔNG được git track (`git ls-files` sạch); `.gitignore` có `*.csv`.
+- ✅ **Data isolation documents** (owner-scoped, personal workspace): `documents.owner_id` (migration
+  `a1b2c3d4e5f6`) + `_get_owned_or_404` guard trong `document_service.py` → list/get/download/delete/
+  reindex chỉ thấy doc của chính user; admin thấy tất cả; doc owner=NULL (legacy) ẩn với non-admin.
+  Access control cho document = **ownership-based** (không role-gated — mọi user đăng nhập upload/
+  mutate được doc của mình). `get_current_user`/`CurrentUserDep` mới trong `core/dependencies.py`.
+  ⚠️ RAG retrieval (`retriever.py`) CHƯA scope theo owner — nếu cần cô lập cả kết quả truy hồi thì
+  phải filter Qdrant/Neo4j theo owner_id (task riêng, chưa làm).
 
 ## CI/CD — đã fix vị trí (từng là bug: workflow nằm sai chỗ)
 

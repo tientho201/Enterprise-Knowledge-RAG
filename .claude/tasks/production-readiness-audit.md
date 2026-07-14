@@ -1,6 +1,6 @@
 # Production Readiness Audit
 
-Cập nhật lần cuối: 2026-07-14 (session 1 — audit + fix xong toàn bộ mục code-fixable)
+Cập nhật lần cuối: 2026-07-14 (session 2 — hardening bảo mật: data isolation documents)
 
 Nguồn chân lý kiến trúc: `.claude/skills/enterprise-knowledge-rag/SKILL.md`.
 Checklist gốc viết từ snapshot cũ — mọi mục dưới đây đã được **verify lại bằng code thật**,
@@ -69,10 +69,22 @@ không tin mù checklist.
   throughput). Đã thêm comment cảnh báo trong `config.py`: nếu đổi sang 5432 trực tiếp phải giảm.
   Commit `docs: document DB pool connection math`.
 
+## Đã Fixed — Session 2 (hardening bảo mật)
+
+- [x] **Data isolation `list_documents()` + ownership enforce upload/delete/reindex** — model
+  `documents.owner_id` (FK users, SET NULL, indexed, nullable) + migration `a1b2c3d4e5f6`.
+  `document_service._get_owned_or_404` enforce ownership (404 không 403 để không lộ tồn tại);
+  list/get/download/delete/reindex đều owner-scoped; admin thấy/quản lý tất cả; doc legacy
+  owner=NULL ẩn với non-admin. Thêm `get_current_user`/`CurrentUserDep`. Access control =
+  ownership-based (user chọn: không role-gate; mọi user đăng nhập mutate được doc của mình).
+  5 unit test isolation pass; mypy + ruff clean. Commit `feat: document data isolation`.
+  **Chưa làm (task riêng):** RAG retriever chưa scope theo owner — kết quả truy hồi vẫn có thể
+  chạm chunk của doc người khác. Nếu cần cô lập cả retrieval → filter Qdrant/Neo4j theo owner_id.
+
 ## Đang Pending — làm tiếp từ đây
 
-_(Hết mục code-fixable trong session 1 — tất cả đã chuyển sang Đã Fixed. Session sau: cân nhắc
-các mục technical-debt còn lại trong SKILL.md nếu muốn tiếp tục hardening — xem cuối file.)_
+_(Hết mục code-fixable trong checklist gốc + 2 mục hardening bảo mật ưu tiên cao. Session sau:
+xem "Gợi ý" cuối file — còn RAG-retrieval scoping, citations table, qdrant SDK, SSE streaming.)_
 
 ## Blocked — cần user làm thủ công (không thể fix bằng code)
 
@@ -92,10 +104,11 @@ các mục technical-debt còn lại trong SKILL.md nếu muốn tiếp tục ha
 
 ## Gợi ý cho session sau (hardening tiếp — nằm ngoài checklist gốc)
 
-Checklist production-readiness gốc đã xong toàn bộ phần code-fixable. Nếu muốn hardening tiếp,
-các mục technical-debt còn lại trong `SKILL.md` (chưa động tới trong audit này):
-- Enforce RBAC ở route upload/delete/reindex (hiện chỉ admin dashboard) — **security, ưu tiên cao**.
-- `list_documents()` filter theo user (data isolation multi-user) — **security, ưu tiên cao**.
+Checklist production-readiness gốc + 2 mục bảo mật ưu tiên cao đã xong. Nếu muốn hardening tiếp,
+các mục technical-debt còn lại trong `SKILL.md`:
+- **RAG retrieval scope theo owner_id** — nối tiếp data isolation session 2: hiện `list_documents`
+  đã owner-scoped nhưng `retriever.py` (Qdrant + Neo4j) CHƯA filter theo owner → user vẫn có thể
+  truy hồi nội dung chunk của doc người khác qua `/chat`. **security, ưu tiên cao nếu multi-tenant.**
 - Citations lưu bằng HTML comment thay vì bảng `citations` (fragile).
 - `_dense_search()` chuyển từ httpx thủ công sang `qdrant_client` SDK.
 - SSE streaming cho `/chat`; nạp conversation history vào `AgentState` (multi-turn).
