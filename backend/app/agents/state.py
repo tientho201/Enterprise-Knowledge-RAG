@@ -17,3 +17,5 @@ class AgentState(TypedDict):
     retry_count: int
     search_tool: bool | None
     document_ids: list[str] | None
+    # Data isolation: chỉ truy hồi chunk của owner này. None = admin/không filter.
+    owner_id: str | None

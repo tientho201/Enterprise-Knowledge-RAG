@@ -25,6 +25,7 @@ class ChatService:
         conversation_id: str | None = None,
         search_tool: bool | None = False,
         document_ids: list[str] | None = None,
+        is_admin: bool = False,
     ) -> ChatResponse:
         # Get or create conversation
         if conversation_id:
@@ -41,7 +42,10 @@ class ChatService:
         # Save user message
         await self.repo.add_message(conv.id, MessageRole.user, message)
 
-        # Run agent graph
+        # Run agent graph.
+        # Data isolation: retrieval chỉ chạm chunk của user (owner_id=user_id).
+        # Admin → owner_id=None → không filter, truy hồi mọi chunk. Mirror document_service.
+        owner_id = None if is_admin else user_id
         graph = get_agent_graph()
         initial_state: AgentState = {
             "query": message,
@@ -57,6 +61,7 @@ class ChatService:
             "retry_count": 0,
             "search_tool": search_tool,
             "document_ids": document_ids,
+            "owner_id": owner_id,
         }
         final_state = await graph.ainvoke(initial_state)
         answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."

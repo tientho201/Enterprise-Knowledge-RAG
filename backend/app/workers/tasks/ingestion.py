@@ -112,6 +112,8 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                                 "document_name": doc.name,
                                 "chunk_index": chunk.chunk_index,
                                 "content": chunk.content,
+                                # Data isolation: retriever filter theo owner_id ở /chat.
+                                "owner_id": doc.owner_id,
                             },
                         )
                     )
@@ -151,6 +153,7 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                         document_id=document_id,
                         document_name=doc.name,
                         chunks=graph_chunks,
+                        owner_id=doc.owner_id,
                     )
                     logger.debug(
                         "Neo4j indexed %d chunks for document %s", len(graph_chunks), document_id

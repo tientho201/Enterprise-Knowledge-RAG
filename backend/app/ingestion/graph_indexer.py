@@ -4,7 +4,7 @@ Graph indexer: persists document chunks and legal cross-reference edges into Neo
 Graph schema
 ────────────
 Nodes
-  (:Chunk {chunk_id, document_id, document_name, content, chunk_index})
+  (:Chunk {chunk_id, document_id, document_name, content, chunk_index, owner_id})
 
 Relationships
   (a:Chunk)-[:NEXT_CHUNK]->(b:Chunk)    — consecutive chunks in the same document
@@ -78,11 +78,15 @@ def index_chunks_to_graph(
     document_id: str,
     document_name: str,
     chunks: list[ChunkRecord],
+    owner_id: str | None = None,
 ) -> None:
     """
     Upsert chunk nodes and edges for *document_id* into Neo4j.
 
     Idempotent — uses MERGE, safe to call on re-index.
+
+    owner_id được ghi lên node để retriever `_graph_search` filter theo chủ sở hữu
+    (data isolation). None = doc legacy/không có owner.
     """
     if not chunks:
         return
@@ -94,6 +98,7 @@ def index_chunks_to_graph(
             "document_name": document_name,
             "content": c.content,
             "chunk_index": c.chunk_index,
+            "owner_id": owner_id,
         }
         for c in chunks
     ]
@@ -109,7 +114,8 @@ def index_chunks_to_graph(
             SET  c.document_id   = ch.document_id,
                  c.document_name = ch.document_name,
                  c.content       = ch.content,
-                 c.chunk_index   = ch.chunk_index
+                 c.chunk_index   = ch.chunk_index,
+                 c.owner_id      = ch.owner_id
             """,
             chunks=chunk_params,
         )

@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends
 
 from app.core.config import settings
-from app.core.dependencies import CurrentUserIdDep, DbDep
+from app.core.dependencies import CurrentUserDep, CurrentUserIdDep, DbDep
 from app.core.rate_limit import rate_limiter
+from app.models.user import UserRole
 from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
@@ -21,16 +22,21 @@ router = APIRouter(prefix="/chat", tags=["chat"])
         Depends(rate_limiter(settings.CHAT_RATE_LIMIT_PER_MINUTE, 60, "chat")),
     ],
 )
-async def chat(body: ChatRequest, user_id: CurrentUserIdDep, db: DbDep):
+async def chat(body: ChatRequest, user: CurrentUserDep, db: DbDep):
     import logging
 
     logging.getLogger(__name__).info(
-        f"Incoming ChatRequest: user_id={user_id}, message={repr(body.message)}, "
+        f"Incoming ChatRequest: user_id={user.id}, message={repr(body.message)}, "
         f"conversation_id={body.conversation_id}, search_tool={body.search_tool}, document_ids={body.document_ids}"
     )
     service = ChatService(db)
     return await service.chat(
-        user_id, body.message, body.conversation_id, body.search_tool, body.document_ids
+        user.id,
+        body.message,
+        body.conversation_id,
+        body.search_tool,
+        body.document_ids,
+        is_admin=(user.role == UserRole.admin),
     )
 
 
