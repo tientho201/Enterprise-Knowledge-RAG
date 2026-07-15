@@ -1,6 +1,6 @@
 # Production Readiness Audit
 
-Cập nhật lần cuối: 2026-07-14 (session 2 — hardening bảo mật: data isolation documents)
+Cập nhật lần cuối: 2026-07-16 (session 3 — hardening bảo mật: data isolation RAG retrieval)
 
 Nguồn chân lý kiến trúc: `.claude/skills/enterprise-knowledge-rag/SKILL.md`.
 Checklist gốc viết từ snapshot cũ — mọi mục dưới đây đã được **verify lại bằng code thật**,
@@ -78,13 +78,28 @@ không tin mù checklist.
   owner=NULL ẩn với non-admin. Thêm `get_current_user`/`CurrentUserDep`. Access control =
   ownership-based (user chọn: không role-gate; mọi user đăng nhập mutate được doc của mình).
   5 unit test isolation pass; mypy + ruff clean. Commit `feat: document data isolation`.
-  **Chưa làm (task riêng):** RAG retriever chưa scope theo owner — kết quả truy hồi vẫn có thể
-  chạm chunk của doc người khác. Nếu cần cô lập cả retrieval → filter Qdrant/Neo4j theo owner_id.
+  **Đã nối tiếp ở session 3:** RAG retriever giờ đã owner-scoped (xem dưới).
+
+## Đã Fixed — Session 3 (hardening bảo mật)
+
+- [x] **Data isolation RAG retrieval (owner-scope `/chat`)** — nối tiếp isolation documents session 2.
+  Chunk mang `owner_id` trong payload Qdrant + property node Neo4j (ghi lúc ingest:
+  `workers/tasks/ingestion.py` + `ingestion/graph_indexer.py`). `HybridRetriever._build_qdrant_filter`
+  (helper thuần, có test) + owner filter trong Cypher `_graph_search`; param `owner_id` trên
+  `_dense_search`/`_graph_search`/`retrieve`. `AgentState.owner_id` chảy từ `chat_service`
+  (owner_id=user_id; admin → None → không filter) → `retriever_node`. `chat.py` API đổi sang
+  `CurrentUserDep` + truyền `is_admin`. Kết quả: `/chat` chỉ truy hồi chunk của chính user; admin
+  thấy tất cả; chunk legacy (payload thiếu owner_id) ẩn với non-admin. 7 unit test mới
+  (`test_retrieval_isolation.py`: build-filter + dense-search gắn filter) — tổng 25 unit test pass;
+  mypy + ruff clean. Commit `feat: RAG retrieval data isolation`.
+  **⚠️ Lưu ý deploy:** chunk cũ ingest trước thay đổi này thiếu `owner_id` trong payload → non-admin
+  không truy hồi được (an toàn nhưng "mất" kết quả). Reindex các doc để backfill payload owner_id.
 
 ## Đang Pending — làm tiếp từ đây
 
-_(Hết mục code-fixable trong checklist gốc + 2 mục hardening bảo mật ưu tiên cao. Session sau:
-xem "Gợi ý" cuối file — còn RAG-retrieval scoping, citations table, qdrant SDK, SSE streaming.)_
+_(Hết mục code-fixable trong checklist gốc + 3 mục hardening bảo mật ưu tiên cao — data isolation
+nay end-to-end cả documents lẫn retrieval. Session sau: xem "Gợi ý" cuối file — còn citations table,
+qdrant SDK, SSE streaming.)_
 
 ## Blocked — cần user làm thủ công (không thể fix bằng code)
 
@@ -104,11 +119,12 @@ xem "Gợi ý" cuối file — còn RAG-retrieval scoping, citations table, qdra
 
 ## Gợi ý cho session sau (hardening tiếp — nằm ngoài checklist gốc)
 
-Checklist production-readiness gốc + 2 mục bảo mật ưu tiên cao đã xong. Nếu muốn hardening tiếp,
+Checklist production-readiness gốc + 3 mục bảo mật ưu tiên cao đã xong (data isolation nay
+end-to-end: cả `list_documents` lẫn `/chat` retrieval đều owner-scoped). Nếu muốn hardening tiếp,
 các mục technical-debt còn lại trong `SKILL.md`:
-- **RAG retrieval scope theo owner_id** — nối tiếp data isolation session 2: hiện `list_documents`
-  đã owner-scoped nhưng `retriever.py` (Qdrant + Neo4j) CHƯA filter theo owner → user vẫn có thể
-  truy hồi nội dung chunk của doc người khác qua `/chat`. **security, ưu tiên cao nếu multi-tenant.**
+- **Backfill owner_id cho chunk cũ** — sau khi deploy data-isolation retrieval, chunk ingest trước
+  thay đổi thiếu `owner_id` trong payload Qdrant/Neo4j → non-admin không truy hồi được. Reindex các
+  doc (hoặc script backfill payload) để khôi phục. Vận hành, không phải code thuần.
 - Citations lưu bằng HTML comment thay vì bảng `citations` (fragile).
 - `_dense_search()` chuyển từ httpx thủ công sang `qdrant_client` SDK.
 - SSE streaming cho `/chat`; nạp conversation history vào `AgentState` (multi-turn).

@@ -112,8 +112,13 @@ Flow: `router → (retriever → grader → [rewrite loop, max 2] →) generator
   reindex chỉ thấy doc của chính user; admin thấy tất cả; doc owner=NULL (legacy) ẩn với non-admin.
   Access control cho document = **ownership-based** (không role-gated — mọi user đăng nhập upload/
   mutate được doc của mình). `get_current_user`/`CurrentUserDep` mới trong `core/dependencies.py`.
-  ⚠️ RAG retrieval (`retriever.py`) CHƯA scope theo owner — nếu cần cô lập cả kết quả truy hồi thì
-  phải filter Qdrant/Neo4j theo owner_id (task riêng, chưa làm).
+- ✅ **Data isolation RAG retrieval** (end-to-end nối tiếp isolation documents): chunk mang `owner_id`
+  trong payload Qdrant + property node Neo4j (ghi lúc ingest, `ingestion.py` + `graph_indexer.py`).
+  `HybridRetriever._build_qdrant_filter` + owner filter trong Cypher `_graph_search`; `AgentState.owner_id`
+  chảy từ `chat_service` (owner_id=user_id, admin=None → không filter) → `retriever_node`. `/chat` giờ
+  chỉ truy hồi chunk của chính user; admin thấy tất cả; chunk legacy (payload thiếu owner_id) ẩn với
+  non-admin. **Lưu ý deploy:** chunk cũ ingest trước thay đổi này thiếu `owner_id` → non-admin không
+  truy hồi được; cần reindex để backfill payload.
 
 ## CI/CD — đã fix vị trí (từng là bug: workflow nằm sai chỗ)
 
