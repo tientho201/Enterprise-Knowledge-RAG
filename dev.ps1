@@ -6,8 +6,8 @@
 .DESCRIPTION
   Mo dong thoi trong CUNG mot cua so, log gop chung, moi dong gan nhan mau:
     [API]    FastAPI  (uvicorn --reload, cong 8000)
-    [WORKER] Celery worker (queue: ingestion, sync) - xu ly ingest pending -> indexed
-    [WEB]    Next.js dev (cong 3000) - chi khi dung -Frontend
+    [WORKER] Celery worker (queue: ingestion, sync)  -> xu ly ingest pending -> indexed
+    [WEB]    Next.js dev (cong 3000)  -- chi khi dung -Frontend
 
   Nhan Ctrl+C de dung TAT CA (tu kill ca tien trinh con: uv -> python, npm -> node).
 
@@ -38,7 +38,7 @@ $RepoRoot    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackendDir  = Join-Path $RepoRoot 'backend'
 $FrontendDir = Join-Path $RepoRoot 'frontend'
 
-# --- Preflight ---------------------------------------------------------------
+# -- Preflight ----------------------------------------------------------------
 if (-not (Test-Path $BackendDir)) {
     Write-Host "Khong tim thay thu muc backend: $BackendDir" -ForegroundColor Red
     exit 1
@@ -47,6 +47,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Write-Host "Khong tim thay 'uv' trong PATH. Cai dat: https://docs.astral.sh/uv/" -ForegroundColor Red
     exit 1
 }
+
 if ($Frontend -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {
     Write-Host "Dung -Frontend nhung khong tim thay 'npm' trong PATH." -ForegroundColor Red
     exit 1
@@ -54,8 +55,8 @@ if ($Frontend -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {
 
 $script:Processes = New-Object System.Collections.ArrayList
 
-# --- Khoi dong 1 dich vu qua cmd.exe /c (resolve uv/npm + redirect stdout) ----
-function Start-DevService {
+# -- Khoi dong 1 dich vu qua cmd.exe /c (de resolve uv/npm + redirect stdout) --
+function Start-Service {
     param(
         [string]$Name,
         [System.ConsoleColor]$Color,
@@ -64,7 +65,7 @@ function Start-DevService {
     )
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName               = $env:ComSpec
+    $psi.FileName               = $env:ComSpec           # cmd.exe
     $psi.Arguments              = "/c $CmdLine"
     $psi.WorkingDirectory       = $Dir
     $psi.UseShellExecute        = $false
@@ -73,8 +74,8 @@ function Start-DevService {
     $psi.CreateNoWindow         = $true
 
     $proc = New-Object System.Diagnostics.Process
-    $proc.StartInfo           = $psi
-    $proc.EnableRaisingEvents  = $true
+    $proc.StartInfo         = $psi
+    $proc.EnableRaisingEvents = $true
 
     $ctx = [pscustomobject]@{ Name = $Name; Color = $Color }
     $handler = {
@@ -95,7 +96,7 @@ function Start-DevService {
     Write-Host ("  -> {0,-6} started (PID {1})" -f $Name, $proc.Id) -ForegroundColor $Color
 }
 
-# --- Don dep: kill ca cay tien trinh + go event -----------------------------
+# -- Don dep: kill ca cay tien trinh + go event -------------------------------
 function Stop-All {
     Write-Host "`nDang dung tat ca dich vu..." -ForegroundColor Yellow
     foreach ($p in $script:Processes) {
@@ -110,19 +111,23 @@ function Stop-All {
     Write-Host "Da dung toan bo." -ForegroundColor Yellow
 }
 
-# --- Main --------------------------------------------------------------------
+# -- Main ---------------------------------------------------------------------
 try {
     Write-Host ""
     Write-Host "=== Dev launcher - Enterprise Knowledge RAG ===" -ForegroundColor Cyan
-    Write-Host "  API -> http://localhost:8000  (/docs, /health)" -ForegroundColor DarkGray
-    if ($Frontend) { Write-Host "  WEB -> http://localhost:3000" -ForegroundColor DarkGray }
+    Write-Host "  API    -> http://localhost:8000  (/docs, /health)" -ForegroundColor DarkGray
+    if ($Frontend) { Write-Host "  WEB    -> http://localhost:3000" -ForegroundColor DarkGray }
     Write-Host "  Nhan Ctrl+C de dung tat ca." -ForegroundColor DarkGray
     Write-Host ""
 
-    Start-DevService -Name 'API' -Color Green -Dir $BackendDir -CmdLine 'uv run uvicorn app.main:app --reload --port 8000'
-    Start-DevService -Name 'WORKER' -Color Magenta -Dir $BackendDir -CmdLine 'uv run celery -A app.workers.celery_app worker -Q ingestion,sync --loglevel=info --pool=solo'
+    Start-Service -Name 'API'    -Color Green   -Dir $BackendDir `
+        -CmdLine 'uv run uvicorn app.main:app --reload --port 8000'
+
+    Start-Service -Name 'WORKER' -Color Magenta -Dir $BackendDir `
+        -CmdLine 'uv run celery -A app.workers.celery_app worker -Q ingestion,sync --loglevel=info --pool=solo'
+
     if ($Frontend) {
-        Start-DevService -Name 'WEB' -Color Blue -Dir $FrontendDir -CmdLine 'npm run dev'
+        Start-Service -Name 'WEB' -Color Blue -Dir $FrontendDir -CmdLine 'npm run dev'
     }
 
     Write-Host ""

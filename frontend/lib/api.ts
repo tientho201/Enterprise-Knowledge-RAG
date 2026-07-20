@@ -267,7 +267,84 @@ export const authAPI = {
 // Chat API
 // ============================================================
 
+export interface StreamCallbacks {
+  onMeta?: (conversationId: string) => void;
+  onDelta?: (text: string) => void;
+  onDone?: (data: { conversation_id: string; message_id: string; citations: Citation[] }) => void;
+  onError?: (detail: string) => void;
+}
+
 export const chatAPI = {
+  // Streaming (SSE): câu trả lời hiện dần token-by-token. FE cập nhật nội dung tin
+  // nhắn khi từng `delta` về, gắn citations lúc `done`.
+  async sendMessageStream(
+    message: string,
+    conversation_id: string | null | undefined,
+    search_tool: boolean | null | undefined,
+    document_ids: string[] | null | undefined,
+    cb: StreamCallbacks
+  ): Promise<void> {
+    const res = await apiFetch("/api/v1/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        conversation_id: conversation_id || null,
+        search_tool: search_tool !== undefined ? search_tool : null,
+        documentIds: document_ids || null,
+      }),
+    });
+
+    if (!res.ok || !res.body) {
+      cb.onError?.(`HTTP ${res.status}`);
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      // Sự kiện SSE ngăn cách bởi \n\n
+      const parts = buf.split("\n\n");
+      buf = parts.pop() || "";
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data:")) continue;
+        let payload: { type: string; [k: string]: unknown };
+        try {
+          payload = JSON.parse(line.slice(5).trim());
+        } catch {
+          continue;
+        }
+        switch (payload.type) {
+          case "meta":
+            cb.onMeta?.(payload.conversation_id as string);
+            break;
+          case "delta":
+            cb.onDelta?.(payload.text as string);
+            break;
+          case "done":
+            cb.onDone?.(
+              payload as unknown as {
+                conversation_id: string;
+                message_id: string;
+                citations: Citation[];
+              }
+            );
+            break;
+          case "error":
+            cb.onError?.(payload.detail as string);
+            break;
+        }
+      }
+    }
+  },
+
   async sendMessage(
     message: string,
     conversation_id?: string | null,

@@ -580,112 +580,61 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
         : s
     ))
 
+    // Cập nhật tin nhắn assistant placeholder — target theo message-id (ổn định kể
+    // cả khi session id đổi từ "new-..." sang id thật), tránh race với onMeta.
+    const patchAssistant = (patch: Partial<Message>) => {
+      setChatSessions(prev => prev.map(s =>
+        s.messages.some(m => m.id === assistantMsgId)
+          ? { ...s, messages: s.messages.map(m => m.id === assistantMsgId ? { ...m, ...patch } : m) }
+          : s
+      ))
+    }
+
     try {
-      // 3. Call API
       const conversationId = currentSession.id.startsWith("new-") ? null : currentSession.id
-      const response = await chatAPI.sendMessage(messageText, conversationId, searchTool, activeDocs)
+      let accumulated = ""
 
-      // 4. If this was a new session, update the session ID in state and activeSessionId immediately
-      const realConvId = response.conversation_id
-      if (currentSession.id.startsWith("new-")) {
-        // Migrate active docs in localStorage
-        const savedDocs = localStorage.getItem(`active_docs_${currentSession.id}`);
-        if (savedDocs) {
-          localStorage.setItem(`active_docs_${realConvId}`, savedDocs);
-          localStorage.removeItem(`active_docs_${currentSession.id}`);
-        }
-        setChatSessions(prev => prev.map(s =>
-          s.id === currentSession.id
-            ? { ...s, id: realConvId }
-            : s
-        ))
-        setActiveSessionId(realConvId)
-      }
-
-      const preprocessedText = preprocessCitations(response.message.content, response.message.citations)
-
-      // 5. Build the real assistant message
-      const assistantMessage: Message = {
-        id: response.message.id,
-        role: "assistant",
-        content: preprocessedText,
-        isStreaming: false,
-        timestamp: new Date(response.message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        citations: response.message.citations,
-      }
-
-      // 6. Update session with real data — stream word by word for UX
-      const textToStream = preprocessedText
-      const textArray = textToStream.split(" ")
-      let wordIndex = 0
-      let currentText = ""
-
-      const targetSessionId = currentSession.id.startsWith("new-") ? realConvId : activeSessionId
-
-      const streamInterval = setInterval(() => {
-        if (wordIndex < textArray.length) {
-          currentText += (wordIndex === 0 ? "" : " ") + textArray[wordIndex]
-
-          setChatSessions(prev => prev.map(s =>
-            s.id === targetSessionId
-              ? {
-                  ...s,
-                  messages: s.messages.map(m =>
-                    m.id === assistantMsgId
-                      ? { ...m, content: currentText }
-                      : m
-                  )
-                }
-              : s
-          ))
-          wordIndex++
-        } else {
-          clearInterval(streamInterval)
-
-          // Finalize: replace placeholder with real message
-          setChatSessions(prev => prev.map(s =>
-            s.id === targetSessionId
-              ? {
-                  ...s,
-                  id: realConvId,
-                  messages: s.messages.map(m =>
-                    m.id === assistantMsgId
-                      ? { ...assistantMessage, id: assistantMsgId }
-                      : m
-                  )
-                }
-              : s
-          ))
-
+      await chatAPI.sendMessageStream(messageText, conversationId, searchTool, activeDocs, {
+        // Nhận id hội thoại thật sớm → migrate session "new-..." + localStorage docs
+        onMeta: (convId) => {
+          if (currentSession.id.startsWith("new-")) {
+            const savedDocs = localStorage.getItem(`active_docs_${currentSession.id}`)
+            if (savedDocs) {
+              localStorage.setItem(`active_docs_${convId}`, savedDocs)
+              localStorage.removeItem(`active_docs_${currentSession.id}`)
+            }
+            setChatSessions(prev => prev.map(s => s.id === currentSession.id ? { ...s, id: convId } : s))
+            setActiveSessionId(convId)
+          }
+        },
+        // Từng mẩu văn bản → nối vào nội dung đang stream
+        onDelta: (text) => {
+          accumulated += text
+          patchAssistant({ content: accumulated })
+        },
+        // Hoàn tất → chốt nội dung + citations
+        onDone: ({ citations }) => {
+          const processed = preprocessCitations(accumulated, citations)
+          patchAssistant({ content: processed, isStreaming: false, citations })
           setIsLlmGenerating(false)
           addAuditLog(
             `Chạy truy vấn RAG: "${messageText.length > 30 ? messageText.substring(0, 30) + '...' : messageText}"`,
             "query",
-            `Trích dẫn: ${response.message.citations?.length || 0}`
+            `Trích dẫn: ${citations?.length || 0}`
           )
           refreshAuditLogs()
-        }
-      }, 30)
-
+        },
+        onError: (detail) => {
+          patchAssistant({ content: `Lỗi từ server: ${detail}`, isStreaming: false })
+          setIsLlmGenerating(false)
+        },
+      })
     } catch (err) {
       console.error("Failed to send message:", err)
       const errorContent = err instanceof ApiError
         ? `Lỗi từ server: ${err.detail}`
         : "Không thể kết nối đến server. Vui lòng thử lại."
-
-      // Replace placeholder with error message
-      setChatSessions(prev => prev.map(s =>
-        s.id === activeSessionId || s.id === currentSession.id
-          ? {
-              ...s,
-              messages: s.messages.map(m =>
-                m.id === assistantMsgId
-                  ? { ...m, content: errorContent, isStreaming: false }
-                  : m
-              )
-            }
-          : s
-      ))
+      patchAssistant({ content: errorContent, isStreaming: false })
       setIsLlmGenerating(false)
     }
   }

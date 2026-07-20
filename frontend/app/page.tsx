@@ -40,6 +40,52 @@ import { Button } from "@/components/ui/button"
 import { useApp, CustomModel } from "@/lib/context"
 import { type Citation, type Document } from "@/lib/api"
 
+// Các bước "suy nghĩ" hiển thị trong lúc chờ backend trả lời (giống thinking của
+// Claude Desktop). Hiện dần từng bước rồi tự ẩn khi câu trả lời bắt đầu về.
+const THINKING_STEPS = [
+  "Phân tích câu hỏi",
+  "Truy hồi tài liệu liên quan",
+  "Xếp hạng nguồn phù hợp",
+  "Tổng hợp câu trả lời",
+]
+
+function ThinkingIndicator() {
+  const [step, setStep] = useState(0)
+  useEffect(() => {
+    const id = setInterval(
+      () => setStep((s) => Math.min(s + 1, THINKING_STEPS.length - 1)),
+      1400
+    )
+    return () => clearInterval(id)
+  }, [])
+  return (
+    <div className="space-y-1.5 py-1">
+      {THINKING_STEPS.map((label, i) => {
+        if (i > step) return null // chỉ hiện các bước đã tới
+        const done = i < step
+        return (
+          <div
+            key={i}
+            className={`flex items-center gap-2 text-[12px] transition-all animate-msg-in ${
+              done ? "text-neutral-600" : "text-neutral-300"
+            }`}
+          >
+            {done ? (
+              <Check className="w-3 h-3 text-emerald-400/60 shrink-0" />
+            ) : (
+              <RefreshCw className="w-3 h-3 animate-spin text-emerald-400/70 shrink-0" />
+            )}
+            <span>
+              {label}
+              {done ? "" : "…"}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function Page() {
   const {
     documents,
@@ -366,6 +412,16 @@ export default function Page() {
             <div className="max-w-3xl mx-auto space-y-6">
               {activeSession.messages.map((message) => {
                 const isAi = message.role === "assistant";
+                // Nguồn tham chiếu: gộp trùng theo tài liệu (nhiều chunk cùng 1 doc
+                // → chỉ hiện 1 nguồn), tránh danh sách lặp lại cùng tên tài liệu.
+                const uniqueCitations = (message.citations ?? []).filter(
+                  (c, i, arr) =>
+                    arr.findIndex(
+                      (x) =>
+                        (x.document_id || x.document_name) ===
+                        (c.document_id || c.document_name)
+                    ) === i
+                );
                 return (
                   <div key={message.id} className="space-y-2 animate-msg-in">
                     
@@ -392,9 +448,16 @@ export default function Page() {
                       }`}>
                         {isAi ? (
                           <div>
-                            {renderMessageContent(message.content)}
-                            {message.isStreaming && (
-                              <span className="inline-block w-[3px] h-4 bg-emerald-400/70 ml-0.5 rounded-full animate-blink-cursor" />
+                            {message.isStreaming && !message.content ? (
+                              // Đang chờ backend: hiện các bước "suy nghĩ", tự ẩn khi có câu trả lời
+                              <ThinkingIndicator />
+                            ) : (
+                              <>
+                                {renderMessageContent(message.content)}
+                                {message.isStreaming && (
+                                  <span className="inline-block w-[3px] h-4 bg-emerald-400/70 ml-0.5 rounded-full animate-blink-cursor" />
+                                )}
+                              </>
                             )}
                           </div>
                         ) : (
@@ -409,7 +472,7 @@ export default function Page() {
                     </div>
 
                     {/* Citations Panel */}
-                    {isAi && message.citations && message.citations.length > 0 && (
+                    {isAi && uniqueCitations.length > 0 && (
                       <div className="ml-10 max-w-[85%]">
                         <div className="border border-white/[0.04] bg-white/[0.01] rounded-xl overflow-hidden">
                           {/* Accordion Toggle */}
@@ -419,7 +482,7 @@ export default function Page() {
                           >
                             <span className="flex items-center gap-1.5">
                               <Database className="w-3.5 h-3.5 text-violet-400/50" />
-                              <span>Nguồn tham chiếu ({message.citations.length})</span>
+                              <span>Nguồn tham chiếu ({uniqueCitations.length})</span>
                             </span>
                             {showRagProcessId === message.id ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                           </button>
@@ -428,7 +491,7 @@ export default function Page() {
                           {showRagProcessId === message.id && (
                             <div className="p-3 border-t border-white/[0.03] space-y-3 text-[12px]">
                               <div className="flex flex-wrap gap-1.5">
-                                {message.citations.map((citation, cIdx) => (
+                                {uniqueCitations.map((citation, cIdx) => (
                                   <button
                                     key={citation.chunk_id || cIdx}
                                     onClick={() => setSelectedCitation(citation)}
