@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = "test"
     AWS_REGION: str = "us-east-1"
     AWS_S3_BUCKET_NAME: str = "documents"
-    AWS_S3_ENDPOINT_URL: str = "http://localhost:4566"  # empty string = use real AWS S3
+    AWS_S3_ENDPOINT_URL: str = ""  # empty string = use real AWS S3
 
     # ── Redis ─────────────────────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
