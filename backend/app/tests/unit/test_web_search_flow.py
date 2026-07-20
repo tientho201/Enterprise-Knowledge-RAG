@@ -1,11 +1,20 @@
 import asyncio
 
+import pytest
 from sqlalchemy import delete, select
 
 from app.core.security import hash_password
 from app.db.session import AsyncSessionLocal
 from app.models.user import User
 from app.services.chat_service import ChatService
+
+# Script kiểm thử thủ công (E2E): cần OpenAI key thật + DB đã tồn tại (không
+# phải sqlite in-memory của conftest.py) + gọi web search thật ra Internet.
+# Không phù hợp để chạy tự động trong CI (không có bảng `users`, key giả).
+# Chạy trực tiếp khi cần: `uv run python app/tests/unit/test_web_search_flow.py`.
+pytestmark = pytest.mark.skip(
+    reason="Manual E2E script — cần OpenAI key thật + DB có sẵn dữ liệu, không chạy trong CI"
+)
 
 
 async def test_flow():
