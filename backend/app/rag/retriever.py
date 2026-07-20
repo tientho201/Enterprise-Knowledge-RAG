@@ -38,9 +38,11 @@ def get_qdrant_client() -> QdrantClient:
     - QDRANT_API_KEY set  → Qdrant Cloud via QDRANT_URL
     - otherwise          → local / self-hosted
     """
+    # timeout rộng: Qdrant Cloud có thể ở region xa (vd sa-east-1) → độ trễ cao;
+    # upsert/ delete theo batch vẫn cần đủ thời gian, tránh "write operation timed out".
     if settings.QDRANT_API_KEY:
-        return QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
-    return QdrantClient(url=settings.QDRANT_URL)
+        return QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY, timeout=60)
+    return QdrantClient(url=settings.QDRANT_URL, timeout=60)
 
 
 class HybridRetriever:

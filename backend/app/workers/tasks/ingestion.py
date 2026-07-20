@@ -41,7 +41,12 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
     try:
         import uuid
 
-        from qdrant_client.models import Distance, PointStruct, VectorParams
+        from qdrant_client.models import (
+            Distance,
+            PayloadSchemaType,
+            PointStruct,
+            VectorParams,
+        )
 
         from app.core.config import settings
         from app.db.session import AsyncSessionLocal
@@ -97,6 +102,21 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                         ),
                     )
 
+                # 6b. Payload index cho các field dùng để FILTER khi truy hồi.
+                # Qdrant (strict mode / Cloud) từ chối search có filter nếu field chưa
+                # được index → retrieval trả 400 "Index required". owner_id = data
+                # isolation, document_id = giới hạn theo tài liệu. Idempotent: gọi lại
+                # khi index đã tồn tại là no-op an toàn.
+                for field in ("owner_id", "document_id"):
+                    try:
+                        qdrant.create_payload_index(
+                            collection_name=settings.QDRANT_COLLECTION_NAME,
+                            field_name=field,
+                            field_schema=PayloadSchemaType.KEYWORD,
+                        )
+                    except Exception as idx_exc:  # noqa: BLE001
+                        logger.debug("Payload index %s: %s", field, idx_exc)
+
                 # 7. Build Qdrant points + Supabase chunk records
                 points: list[PointStruct] = []
                 chunk_records: list[Chunk] = []
@@ -129,8 +149,16 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                         )
                     )
 
-                # 8. Upsert vectors to Qdrant Cloud
-                qdrant.upsert(collection_name=settings.QDRANT_COLLECTION_NAME, points=points)
+                # 8. Upsert vectors to Qdrant Cloud theo BATCH.
+                # Doc lớn -> hàng nghìn point; upsert 1 lần dễ "write operation timed out"
+                # (nhất là Qdrant Cloud region xa). Chia nhỏ để mỗi request gọn & retry-safe.
+                UPSERT_BATCH = 100
+                for i in range(0, len(points), UPSERT_BATCH):
+                    qdrant.upsert(
+                        collection_name=settings.QDRANT_COLLECTION_NAME,
+                        points=points[i : i + UPSERT_BATCH],
+                        wait=True,
+                    )
 
                 # 9. Save chunk metadata to Supabase/PostgreSQL
                 db.add_all(chunk_records)
