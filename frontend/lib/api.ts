@@ -2,13 +2,16 @@
 // API Client — Centralized HTTP layer for Backend communication
 // ============================================================
 
-const BASE_URL = "http://localhost:8000"; // Directly calls backend API
+// Dùng 127.0.0.1 (không phải "localhost"): trên Windows, trình duyệt phân giải
+// "localhost" thành IPv6 ::1 trong khi uvicorn chỉ bind IPv4 127.0.0.1 → "Failed
+// to fetch". Ép IPv4 để khớp. Origin (localhost:3000) không đổi nên CORS vẫn OK.
+const BASE_URL = "http://127.0.0.1:8000"; // Directly calls backend API
 
 // ============================================================
 // MOCK MODE — Set to true to bypass backend (dev/demo only)
 // Credentials: admin@enterprise.com / admin123
 // ============================================================
-export const MOCK_MODE = true;
+export const MOCK_MODE = false;
 
 // --------------- Token helpers ---------------
 
