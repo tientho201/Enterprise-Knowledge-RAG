@@ -52,12 +52,37 @@ def build_graph() -> StateGraph:
     return graph
 
 
+def build_retrieval_graph() -> StateGraph:
+    """Graph giống build_graph nhưng DỪNG trước generator (kết thúc ở router/grader).
+
+    Dùng cho luồng SSE streaming: chạy tới đây để có intent + reranked_results,
+    rồi stream phần sinh câu trả lời riêng (token-by-token) ngoài graph.
+    """
+    graph = StateGraph(AgentState)
+
+    graph.add_node("router", router_node)
+    graph.add_node("retriever", retriever_node)
+    graph.add_node("grader", grader_node)
+    graph.add_node("rewriter", rewriter_node)
+
+    graph.add_edge(START, "router")
+    graph.add_conditional_edges(
+        "router", should_retrieve, {"retrieve": "retriever", "generate": END}
+    )
+    graph.add_edge("retriever", "grader")
+    graph.add_conditional_edges("grader", should_rewrite, {"rewrite": "rewriter", "generate": END})
+    graph.add_edge("rewriter", "retriever")
+
+    return graph
+
+
 def compile_graph():
     return build_graph().compile()
 
 
-# Singleton compiled graph
+# Singleton compiled graphs
 _compiled_graph = None
+_retrieval_graph = None
 
 
 def get_agent_graph():
@@ -65,3 +90,10 @@ def get_agent_graph():
     if _compiled_graph is None:
         _compiled_graph = compile_graph()
     return _compiled_graph
+
+
+def get_retrieval_graph():
+    global _retrieval_graph
+    if _retrieval_graph is None:
+        _retrieval_graph = build_retrieval_graph().compile()
+    return _retrieval_graph

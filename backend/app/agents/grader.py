@@ -1,47 +1,54 @@
 """
 Grader node: evaluates whether retrieved docs are relevant to the query.
 If too few relevant docs, sets confidence_score low to trigger rewriter.
+
+Tối ưu độ trễ: chấm điểm TẤT CẢ chunk trong MỘT lần gọi LLM (batch) thay vì mỗi
+chunk một lần — trước đây tới 5 round-trip tuần tự, giờ chỉ 1. Cắt phần lớn thời
+gian chờ của mỗi truy vấn.
 """
+
+import re
 
 from app.agents.state import AgentState
 from app.llm.factory import get_llm
 from app.rag.reranker import get_reranker
 
-GRADE_PROMPT = """You are grading the relevance of a retrieved document to a user query.
-Score: "yes" if the document is relevant, "no" if it is not.
-Respond with ONLY "yes" or "no".
+BATCH_GRADE_PROMPT = """You are grading the relevance of retrieved documents to a user query.
+For each numbered document, decide if it is relevant to answering the query.
+Return ONLY the numbers of the relevant documents separated by commas (e.g. "1,3,4").
+If none are relevant, return exactly "none".
 
 Query: {query}
-Document: {content}"""
+
+Documents:
+{docs}"""
 
 
 async def grader_node(state: AgentState) -> AgentState:
-    llm = get_llm()
     reranker = get_reranker()
     merged = state.get("merged_results", [])
 
     if not merged:
         return {**state, "reranked_results": [], "confidence_score": 0.0}
 
-    # Re-rank first
+    # Re-rank first (hybrid score — không gọi LLM)
     query = state.get("rewritten_query") or state["query"]
     reranked = reranker.rerank(query, merged)
 
-    # Grade top results
-    relevant_count = 0
-    for chunk in reranked:
-        response = await llm.chat(
-            messages=[
-                {
-                    "role": "user",
-                    "content": GRADE_PROMPT.format(query=query, content=chunk.content[:500]),
-                }
-            ],
-            temperature=0.0,
-            max_tokens=5,
-        )
-        if response.strip().lower() == "yes":
-            relevant_count += 1
+    # Chấm điểm cả lô trong 1 lần gọi LLM
+    docs_block = "\n\n".join(f"{i + 1}. {chunk.content[:500]}" for i, chunk in enumerate(reranked))
+    llm = get_llm()
+    response = await llm.chat(
+        messages=[
+            {"role": "user", "content": BATCH_GRADE_PROMPT.format(query=query, docs=docs_block)}
+        ],
+        temperature=0.0,
+        max_tokens=30,
+    )
 
-    confidence = relevant_count / max(len(reranked), 1)
+    # Parse các số hợp lệ (1..len) từ câu trả lời; "none" → 0 relevant
+    relevant = {
+        n for n in (int(x) for x in re.findall(r"\d+", response)) if 1 <= n <= len(reranked)
+    }
+    confidence = len(relevant) / max(len(reranked), 1)
     return {**state, "reranked_results": reranked, "confidence_score": confidence}

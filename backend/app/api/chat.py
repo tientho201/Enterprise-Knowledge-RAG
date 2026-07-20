@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
 from app.core.dependencies import CurrentUserDep, CurrentUserIdDep, DbDep
@@ -37,6 +38,30 @@ async def chat(body: ChatRequest, user: CurrentUserDep, db: DbDep):
         body.search_tool,
         body.document_ids,
         is_admin=(user.role == UserRole.admin),
+    )
+
+
+@router.post(
+    "/stream",
+    dependencies=[
+        Depends(rate_limiter(settings.CHAT_RATE_LIMIT_PER_MINUTE, 60, "chat")),
+    ],
+)
+async def chat_stream(body: ChatRequest, user: CurrentUserDep, db: DbDep):
+    """Streaming SSE: câu trả lời hiện dần token-by-token (giảm thời gian chờ chữ đầu)."""
+    service = ChatService(db)
+    stream = service.chat_stream(
+        user.id,
+        body.message,
+        body.conversation_id,
+        body.search_tool,
+        body.document_ids,
+        is_admin=(user.role == UserRole.admin),
+    )
+    return StreamingResponse(
+        stream,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
