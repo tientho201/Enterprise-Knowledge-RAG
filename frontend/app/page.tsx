@@ -112,8 +112,13 @@ export default function Page() {
 
   // --- Local States for the Chat View ---
   const [inputMessage, setInputMessage] = useState<string>("")
-  const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null)
-  const [copiedText, setCopiedText] = useState<boolean>(false)
+  // Nguồn được chọn: gom TẤT CẢ chunk trích dẫn của cùng 1 tài liệu để hiện ở panel bên phải.
+  const [selectedSource, setSelectedSource] = useState<{
+    name: string
+    documentId: string
+    citations: Citation[]
+  } | null>(null)
+  const [copiedChunkId, setCopiedChunkId] = useState<string | null>(null)
   const [showSearchToggle, setShowSearchToggle] = useState<boolean>(false)
   const [searchToolEnabled, setSearchToolEnabled] = useState<boolean>(false)
   const [newModelName, setNewModelName] = useState<string>("")
@@ -174,25 +179,10 @@ export default function Page() {
     }
   }
 
-  const copyToClipboard = (text: string) => {
+  const copyToClipboard = (text: string, chunkId: string) => {
     navigator.clipboard.writeText(text)
-    setCopiedText(true)
-    setTimeout(() => setCopiedText(false), 2000)
-  }
-
-  const handleCitationClick = (citationId: string) => {
-    let foundCitation: Citation | undefined;
-    
-    activeSession.messages.forEach(m => {
-      if (m.citations) {
-        const match = m.citations.find(c => c.chunk_id === citationId)
-        if (match) foundCitation = match;
-      }
-    });
-
-    if (foundCitation) {
-      setSelectedCitation(foundCitation)
-    }
+    setCopiedChunkId(chunkId)
+    setTimeout(() => setCopiedChunkId(null), 2000)
   }
 
   // Render text containing citation markdown links [DocName - Article](#cite-id)
@@ -282,22 +272,11 @@ export default function Page() {
         return <strong key={index} className="text-neutral-100 font-semibold">{part.slice(2, -2)}</strong>;
       }
       
-      const citationMatch = part.match(/\[(.*?)\]\(#cite-(.*?)\)/);
-      if (citationMatch) {
-        const label = citationMatch[1];
-        const citationId = citationMatch[2];
-        return (
-          <button
-            key={index}
-            onClick={() => handleCitationClick(citationId)}
-            className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium badge-accent hover:bg-emerald-500/15 transition-colors cursor-pointer mx-0.5 align-baseline"
-          >
-            <BookOpen className="w-2.5 h-2.5 mr-1 opacity-70" />
-            {label.split(' - ')[1] || label}
-          </button>
-        );
+      // Bỏ badge trích dẫn inline — nguồn giờ gom vào dropdown "Nguồn truy vấn" đầu câu trả lời.
+      if (part.match(/\[(.*?)\]\(#cite-(.*?)\)/)) {
+        return null;
       }
-      
+
       return part;
     });
   }
@@ -449,6 +428,64 @@ export default function Page() {
                       }`}>
                         {isAi ? (
                           <div>
+                            {/* Nguồn truy vấn — ĐẶT TRÊN câu trả lời, bấm để xổ dropdown */}
+                            {uniqueCitations.length > 0 && (
+                              <div className="mb-2.5 border border-white/[0.04] bg-white/[0.01] rounded-xl overflow-hidden">
+                                <button
+                                  onClick={() => setShowRagProcessId(showRagProcessId === message.id ? null : message.id)}
+                                  className="w-full px-3 py-2 flex items-center justify-between text-[12px] text-neutral-500 hover:text-neutral-300 hover:bg-white/[0.02] transition-colors"
+                                >
+                                  <span className="flex items-center gap-1.5">
+                                    <Database className="w-3.5 h-3.5 text-violet-400/50" />
+                                    <span>Nguồn truy vấn ({uniqueCitations.length})</span>
+                                  </span>
+                                  {showRagProcessId === message.id ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                                </button>
+
+                                {showRagProcessId === message.id && (
+                                  <div className="p-3 border-t border-white/[0.03] space-y-2 text-[12px]">
+                                    {uniqueCitations.map((citation, cIdx) => (
+                                      <button
+                                        key={citation.chunk_id || cIdx}
+                                        onClick={() => setSelectedSource({
+                                          name: citation.document_name,
+                                          documentId: citation.document_id,
+                                          // Gom tất cả chunk cùng tài liệu (theo document_id, fallback tên)
+                                          citations: (message.citations ?? []).filter(c =>
+                                            (c.document_id || c.document_name) === (citation.document_id || citation.document_name)
+                                          ),
+                                        })}
+                                        className="w-full text-left flex flex-col gap-1 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.05] hover:border-white/[0.1] hover:bg-white/[0.03] transition-colors group"
+                                      >
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="flex items-center justify-center w-4 h-4 rounded bg-violet-500/10 text-[9px] font-bold text-violet-400/70 shrink-0">
+                                            {cIdx + 1}
+                                          </span>
+                                          <FileText className="w-3 h-3 text-violet-400/50 shrink-0" />
+                                          <span className="text-[12px] font-medium text-neutral-300 truncate">{citation.document_name}</span>
+                                          {citation.section_title && (
+                                            <span className="text-[10px] text-emerald-400/60 font-mono truncate max-w-[100px]">· {citation.section_title}</span>
+                                          )}
+                                          {(() => {
+                                            const cnt = (message.citations ?? []).filter(c => (c.document_id || c.document_name) === (citation.document_id || citation.document_name)).length
+                                            return cnt > 1 ? (
+                                              <span className="text-[9px] text-neutral-500 font-mono shrink-0 ml-1">{cnt} đoạn</span>
+                                            ) : null
+                                          })()}
+                                          <ChevronRight className="w-3 h-3 text-neutral-600 ml-auto shrink-0 group-hover:text-neutral-400" />
+                                        </div>
+                                        {citation.content_snippet && (
+                                          <p className="text-[11px] text-neutral-500 leading-relaxed line-clamp-2 pl-[22px]">
+                                            {citation.content_snippet}
+                                          </p>
+                                        )}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
                             {message.isStreaming && !message.content ? (
                               // Đang chờ backend: hiện các bước "suy nghĩ", tự ẩn khi có câu trả lời
                               <ThinkingIndicator />
@@ -472,47 +509,6 @@ export default function Page() {
                       </div>
                     </div>
 
-                    {/* Citations Panel */}
-                    {isAi && uniqueCitations.length > 0 && (
-                      <div className="ml-10 max-w-[85%]">
-                        <div className="border border-white/[0.04] bg-white/[0.01] rounded-xl overflow-hidden">
-                          {/* Accordion Toggle */}
-                          <button
-                            onClick={() => setShowRagProcessId(showRagProcessId === message.id ? null : message.id)}
-                            className="w-full px-3 py-2 flex items-center justify-between text-[12px] text-neutral-500 hover:text-neutral-300 hover:bg-white/[0.02] transition-colors"
-                          >
-                            <span className="flex items-center gap-1.5">
-                              <Database className="w-3.5 h-3.5 text-violet-400/50" />
-                              <span>Nguồn tham chiếu ({uniqueCitations.length})</span>
-                            </span>
-                            {showRagProcessId === message.id ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                          </button>
-
-                          {/* Accordion Content */}
-                          {showRagProcessId === message.id && (
-                            <div className="p-3 border-t border-white/[0.03] space-y-3 text-[12px]">
-                              <div className="flex flex-wrap gap-1.5">
-                                {uniqueCitations.map((citation, cIdx) => (
-                                  <button
-                                    key={citation.chunk_id || cIdx}
-                                    onClick={() => setSelectedCitation(citation)}
-                                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.05] text-[11px] text-neutral-400 hover:border-white/[0.1] hover:text-neutral-200 transition-colors"
-                                  >
-                                    <FileText className="w-3 h-3 text-violet-400/50" />
-                                    <span className="max-w-[120px] truncate">{citation.document_name}</span>
-                                    {citation.section_title && (
-                                      <span className="text-[10px] text-emerald-400/60 font-mono font-semibold truncate max-w-[80px]">
-                                        {citation.section_title}
-                                      </span>
-                                    )}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )
               })}
@@ -1049,84 +1045,81 @@ export default function Page() {
       )}
 
       {/* ===== CITATION DETAIL DRAWER ===== */}
-      {selectedCitation && (
+      {selectedSource && (
         <div className="fixed inset-0 z-50 flex justify-end overlay-backdrop">
-          <div className="absolute inset-0" onClick={() => setSelectedCitation(null)} />
-          
+          <div className="absolute inset-0" onClick={() => setSelectedSource(null)} />
+
           <div className="relative w-full max-w-lg h-full bg-[#111111] border-l border-white/[0.06] shadow-2xl flex flex-col z-10 animate-slide-in-right">
-            
+
             <div className="p-4 border-b border-white/[0.04] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-emerald-400/60" />
-                <h3 className="font-bold text-neutral-200 text-sm">Trích dẫn nguồn</h3>
+              <div className="flex items-center gap-2 min-w-0">
+                <BookOpen className="w-4 h-4 text-emerald-400/60 shrink-0" />
+                <h3 className="font-bold text-neutral-200 text-sm truncate">Trích dẫn nguồn</h3>
               </div>
-              <button 
-                onClick={() => setSelectedCitation(null)}
-                className="p-1.5 rounded-lg hover:bg-white/[0.04] text-neutral-500 hover:text-neutral-200 transition-colors"
+              <button
+                onClick={() => setSelectedSource(null)}
+                className="p-1.5 rounded-lg hover:bg-white/[0.04] text-neutral-500 hover:text-neutral-200 transition-colors shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-5 scrollbar-thin">
-              
-              {/* Document Metadata */}
-              <div className="glass-card p-4 rounded-xl space-y-3">
-                <div>
-                  <h4 className="font-bold text-neutral-100 text-sm">{selectedCitation.document_name}</h4>
-                  <p className="text-[11px] text-neutral-500 mt-0.5">
-                    Document ID: {selectedCitation.document_id}
-                  </p>
-                </div>
 
-                <div className="grid grid-cols-2 gap-2 pt-2.5 border-t border-white/[0.04] text-[11px] text-neutral-400">
-                  {selectedCitation.section_title && (
-                    <div className="col-span-2">
-                      <span className="text-neutral-600">Mục:</span> <span className="text-neutral-300 font-medium">{selectedCitation.section_title}</span>
-                    </div>
-                  )}
-                  {selectedCitation.page_number && (
-                    <div>
-                      <span className="text-neutral-600">Trang:</span> <span className="text-neutral-300 font-medium">{selectedCitation.page_number}</span>
-                    </div>
-                  )}
-                  <div className="col-span-2">
-                    <span className="text-neutral-600">Chunk ID:</span> <span className="text-neutral-300 font-mono">{selectedCitation.chunk_id}</span>
+              {/* Document header */}
+              <div className="glass-card p-4 rounded-xl space-y-1">
+                <div className="flex items-start gap-2">
+                  <FileText className="w-4 h-4 text-violet-400/60 mt-0.5 shrink-0" />
+                  <div className="min-w-0">
+                    <h4 className="font-bold text-neutral-100 text-sm break-words">{selectedSource.name}</h4>
+                    <p className="text-[11px] text-neutral-500 mt-0.5">
+                      Document ID: {selectedSource.documentId} · {selectedSource.citations.length} đoạn trích
+                    </p>
                   </div>
                 </div>
               </div>
 
-              {/* Snippet */}
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">Nội dung văn bản gốc</span>
-                  
-                  <button 
-                    onClick={() => copyToClipboard(selectedCitation.content_snippet)}
-                    className="flex items-center gap-1 text-[11px] text-neutral-500 hover:text-emerald-400 transition-colors"
-                  >
-                    {copiedText ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedText ? "Đã sao chép" : "Sao chép"}</span>
-                  </button>
-                </div>
-                
-                <div className="bg-white/[0.02] border border-white/[0.04] rounded-xl p-4 text-neutral-300 text-[13px] leading-relaxed whitespace-pre-wrap select-text">
-                  {selectedCitation.content_snippet}
-                </div>
-              </div>
+              {/* Danh sách TẤT CẢ đoạn trích (chunk) của tài liệu này */}
+              <div className="space-y-3">
+                <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">
+                  Các đoạn trích dẫn ({selectedSource.citations.length})
+                </span>
 
-              {/* Source link */}
-              {selectedCitation.source_link && (
-                <div className="p-3 bg-violet-500/[0.03] border border-violet-500/[0.06] rounded-xl text-[12px] space-y-1">
-                  <div className="font-medium text-violet-300/80 flex items-center gap-1">
-                    <Sparkles className="w-3.5 h-3.5 text-violet-400/50" />
-                    <span>Liên kết nguồn</span>
+                {selectedSource.citations.map((cit, i) => (
+                  <div key={cit.chunk_id || i} className="bg-white/[0.02] border border-white/[0.04] rounded-xl p-4 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-[11px] text-neutral-400 min-w-0">
+                        <span className="flex items-center justify-center w-4 h-4 rounded bg-violet-500/10 text-[9px] font-bold text-violet-400/70 shrink-0">
+                          {i + 1}
+                        </span>
+                        {cit.section_title
+                          ? <span className="text-emerald-400/70 font-mono truncate">{cit.section_title}</span>
+                          : <span className="text-neutral-600 font-mono truncate">chunk {cit.chunk_id.slice(0, 8)}</span>}
+                        {cit.page_number && <span className="text-neutral-600 shrink-0">· tr.{cit.page_number}</span>}
+                      </span>
+
+                      <button
+                        onClick={() => copyToClipboard(cit.content_snippet, cit.chunk_id)}
+                        className="flex items-center gap-1 text-[11px] text-neutral-500 hover:text-emerald-400 transition-colors shrink-0"
+                      >
+                        {copiedChunkId === cit.chunk_id ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedChunkId === cit.chunk_id ? "Đã chép" : "Chép"}</span>
+                      </button>
+                    </div>
+
+                    <div className="text-neutral-300 text-[13px] leading-relaxed whitespace-pre-wrap select-text">
+                      {cit.content_snippet}
+                    </div>
+
+                    {cit.source_link && (
+                      <a href={cit.source_link} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[11px] text-emerald-400/80 hover:text-emerald-400 underline break-all">
+                        <Sparkles className="w-3 h-3 shrink-0" />
+                        {cit.source_link}
+                      </a>
+                    )}
                   </div>
-                  <a href={selectedCitation.source_link} target="_blank" rel="noopener noreferrer" className="text-emerald-400/80 hover:text-emerald-400 underline break-all">
-                    {selectedCitation.source_link}
-                  </a>
-                </div>
-              )}
+                ))}
+              </div>
 
             </div>
 
@@ -1134,22 +1127,22 @@ export default function Page() {
             <div className="p-4 border-t border-white/[0.04] flex gap-2">
               <Button
                 onClick={() => {
-                  setInputMessage(prev => prev + ` Dựa trên thông tin tại ${selectedCitation.document_name}${selectedCitation.section_title ? ` - ${selectedCitation.section_title}` : ''}:`);
-                  setSelectedCitation(null);
+                  setInputMessage(prev => prev + ` Dựa trên thông tin tại ${selectedSource.name}:`);
+                  setSelectedSource(null);
                 }}
                 className="flex-1 bg-emerald-500/80 hover:bg-emerald-500 text-white text-[12px] py-2 rounded-xl font-medium border-0 cursor-pointer"
               >
                 Trích soạn thảo tiếp
               </Button>
               <Button
-                onClick={() => setSelectedCitation(null)}
+                onClick={() => setSelectedSource(null)}
                 variant="outline"
                 className="bg-transparent border-white/[0.06] text-neutral-400 hover:text-neutral-200 hover:bg-white/[0.04] text-[12px] py-2 rounded-xl"
               >
                 Đóng
               </Button>
             </div>
-            
+
           </div>
         </div>
       )}
