@@ -27,11 +27,18 @@ class HybridScoreReranker:
     def __init__(self, top_k: int | None = None):
         self.top_k = top_k or settings.RERANK_TOP_K
 
-    def rerank(self, query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:  # noqa: ARG002
+    def rerank(
+        self,
+        query: str,  # noqa: ARG002
+        chunks: list[RetrievedChunk],
+        top_k: int | None = None,
+    ) -> list[RetrievedChunk]:
         if not chunks:
             return []
+        # top_k từ UI (nếu có) override RERANK_TOP_K cấu hình
+        limit = top_k if top_k is not None else self.top_k
         reranked = sorted(chunks, key=lambda x: x.score, reverse=True)
-        return reranked[: self.top_k]
+        return reranked[:limit]
 
 
 @lru_cache

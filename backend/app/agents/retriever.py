@@ -21,10 +21,14 @@ async def retriever_node(state: AgentState) -> AgentState:
 
     document_ids = state.get("document_ids")
     owner_id = state.get("owner_id")  # data isolation: None = admin/không filter
+    score_threshold = state.get("similarity_threshold")  # ngưỡng tương đồng từ UI
 
     # Dense seeds (Qdrant)
     dense_results = retriever._dense_search(
-        query_embedding, document_ids=document_ids, owner_id=owner_id
+        query_embedding,
+        document_ids=document_ids,
+        owner_id=owner_id,
+        score_threshold=score_threshold,
     )
 
     # Graph expansion (Neo4j) — returns {} if Neo4j is unavailable
@@ -34,7 +38,11 @@ async def retriever_node(state: AgentState) -> AgentState:
 
     # Merge + hybrid score
     merged_results = retriever.retrieve(
-        query, query_embedding, document_ids=document_ids, owner_id=owner_id
+        query,
+        query_embedding,
+        document_ids=document_ids,
+        owner_id=owner_id,
+        score_threshold=score_threshold,
     )
 
     return {

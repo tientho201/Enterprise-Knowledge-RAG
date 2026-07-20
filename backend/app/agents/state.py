@@ -19,3 +19,7 @@ class AgentState(TypedDict):
     document_ids: list[str] | None
     # Data isolation: chỉ truy hồi chunk của owner này. None = admin/không filter.
     owner_id: str | None
+    # Tuning từ UI (None → dùng default config). top_k = số chunk cuối (rerank);
+    # similarity_threshold = điểm cosine tối thiểu cho dense search.
+    top_k: int | None
+    similarity_threshold: float | None

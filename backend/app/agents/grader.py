@@ -31,9 +31,9 @@ async def grader_node(state: AgentState) -> AgentState:
     if not merged:
         return {**state, "reranked_results": [], "confidence_score": 0.0}
 
-    # Re-rank first (hybrid score — không gọi LLM)
+    # Re-rank first (hybrid score — không gọi LLM). top_k từ UI override RERANK_TOP_K.
     query = state.get("rewritten_query") or state["query"]
-    reranked = reranker.rerank(query, merged)
+    reranked = reranker.rerank(query, merged, top_k=state.get("top_k"))
 
     # Chấm điểm cả lô trong 1 lần gọi LLM
     docs_block = "\n\n".join(f"{i + 1}. {chunk.content[:500]}" for i, chunk in enumerate(reranked))

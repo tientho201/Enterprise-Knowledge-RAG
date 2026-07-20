@@ -24,6 +24,13 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     search_tool: bool | None = Field(default=False, alias="searchTool")
     document_ids: list[str] | None = Field(default=None, alias="documentIds")
+    # Tuning từ panel Cấu hình. None → dùng default trong config.py.
+    # top_k: số chunk cuối đưa vào generator (override RERANK_TOP_K).
+    # similarity_threshold: điểm cosine tối thiểu cho dense search (Qdrant score_threshold).
+    top_k: int | None = Field(default=None, alias="topK", ge=1, le=50)
+    similarity_threshold: float | None = Field(
+        default=None, alias="similarityThreshold", ge=0.0, le=1.0
+    )
 
     model_config = {"populate_by_name": True, "from_attributes": True}
 

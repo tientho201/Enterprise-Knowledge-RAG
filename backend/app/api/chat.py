@@ -38,6 +38,8 @@ async def chat(body: ChatRequest, user: CurrentUserDep, db: DbDep):
         body.search_tool,
         body.document_ids,
         is_admin=(user.role == UserRole.admin),
+        top_k=body.top_k,
+        similarity_threshold=body.similarity_threshold,
     )
 
 
@@ -57,6 +59,8 @@ async def chat_stream(body: ChatRequest, user: CurrentUserDep, db: DbDep):
         body.search_tool,
         body.document_ids,
         is_admin=(user.role == UserRole.admin),
+        top_k=body.top_k,
+        similarity_threshold=body.similarity_threshold,
     )
     return StreamingResponse(
         stream,

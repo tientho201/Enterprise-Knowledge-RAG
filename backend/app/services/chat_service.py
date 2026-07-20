@@ -29,6 +29,8 @@ class ChatService:
         search_tool: bool | None = False,
         document_ids: list[str] | None = None,
         is_admin: bool = False,
+        top_k: int | None = None,
+        similarity_threshold: float | None = None,
     ) -> ChatResponse:
         # Get or create conversation
         if conversation_id:
@@ -65,6 +67,8 @@ class ChatService:
             "search_tool": search_tool,
             "document_ids": document_ids,
             "owner_id": owner_id,
+            "top_k": top_k,
+            "similarity_threshold": similarity_threshold,
         }
         final_state = await graph.ainvoke(initial_state)
         answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."
@@ -150,6 +154,8 @@ class ChatService:
         search_tool: bool | None = False,
         document_ids: list[str] | None = None,
         is_admin: bool = False,
+        top_k: int | None = None,
+        similarity_threshold: float | None = None,
     ) -> AsyncIterator[str]:
         """Streaming SSE: chạy retrieval rồi stream câu trả lời token-by-token.
 
@@ -193,6 +199,8 @@ class ChatService:
                 "search_tool": search_tool,
                 "document_ids": document_ids,
                 "owner_id": owner_id,
+                "top_k": top_k,
+                "similarity_threshold": similarity_threshold,
             }
             state = await get_retrieval_graph().ainvoke(initial_state)
 

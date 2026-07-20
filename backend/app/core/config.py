@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     # ── Retrieval ─────────────────────────────────────────────────────────────
     DENSE_TOP_K: int = 20
     GRAPH_TOP_K: int = 20
-    RERANK_TOP_K: int = 5
+    RERANK_TOP_K: int = 10  # số chunk đưa tới generator. Tăng 5→10 để cải thiện recall
     DENSE_WEIGHT: float = 0.7
     GRAPH_WEIGHT: float = 0.3
 

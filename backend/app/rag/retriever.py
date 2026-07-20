@@ -96,6 +96,7 @@ class HybridRetriever:
         query_embedding: list[float],
         document_ids: list[str] | None = None,
         owner_id: str | None = None,
+        score_threshold: float | None = None,
     ) -> list[RetrievedChunk]:
         import httpx
 
@@ -104,12 +105,15 @@ class HybridRetriever:
             headers["api-key"] = settings.QDRANT_API_KEY
 
         url = f"{settings.QDRANT_URL.rstrip('/')}/collections/{settings.QDRANT_COLLECTION_NAME}/points/search"
-        payload = {
+        payload: dict = {
             "vector": query_embedding,
             "limit": self.dense_top_k,
             "with_payload": True,
             "with_vector": False,
         }
+        # Ngưỡng tương đồng từ UI: Qdrant chỉ trả điểm cosine >= threshold.
+        if score_threshold is not None:
+            payload["score_threshold"] = score_threshold
         qdrant_filter = self._build_qdrant_filter(document_ids, owner_id)
         if qdrant_filter:
             payload["filter"] = qdrant_filter
@@ -244,6 +248,7 @@ class HybridRetriever:
         query_embedding: list[float],
         document_ids: list[str] | None = None,
         owner_id: str | None = None,
+        score_threshold: float | None = None,
     ) -> list[RetrievedChunk]:
         """
         Run hybrid retrieval and return chunks sorted by descending hybrid score.
@@ -256,7 +261,9 @@ class HybridRetriever:
             owner_id:        Data-isolation boundary — chỉ truy hồi chunk của user này.
                              None = admin/không filter.
         """
-        dense_results = self._dense_search(query_embedding, document_ids, owner_id)
+        dense_results = self._dense_search(
+            query_embedding, document_ids, owner_id, score_threshold
+        )
         if not dense_results:
             return []
 
