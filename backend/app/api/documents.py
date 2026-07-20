@@ -94,9 +94,7 @@ async def reindex_document(body: ReindexRequest, user: CurrentUserDep, db: DbDep
 
 
 @router.patch("/{doc_id}/active", response_model=DocumentResponse)
-async def set_document_active(
-    doc_id: str, body: SetActiveRequest, user: CurrentUserDep, db: DbDep
-):
+async def set_document_active(doc_id: str, body: SetActiveRequest, user: CurrentUserDep, db: DbDep):
     """Bật/tắt tài liệu. Chỉ doc active mới hiện ở panel hội thoại + được RAG dùng."""
     service = DocumentService(db)
     return await service.set_active(

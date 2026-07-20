@@ -261,9 +261,7 @@ class HybridRetriever:
             owner_id:        Data-isolation boundary — chỉ truy hồi chunk của user này.
                              None = admin/không filter.
         """
-        dense_results = self._dense_search(
-            query_embedding, document_ids, owner_id, score_threshold
-        )
+        dense_results = self._dense_search(query_embedding, document_ids, owner_id, score_threshold)
         if not dense_results:
             return []
 

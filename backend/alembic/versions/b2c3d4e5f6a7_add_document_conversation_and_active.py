@@ -27,9 +27,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column(
-        "documents", sa.Column("conversation_id", sa.String(length=36), nullable=True)
-    )
+    op.add_column("documents", sa.Column("conversation_id", sa.String(length=36), nullable=True))
     op.create_index(
         op.f("ix_documents_conversation_id"), "documents", ["conversation_id"], unique=False
     )
