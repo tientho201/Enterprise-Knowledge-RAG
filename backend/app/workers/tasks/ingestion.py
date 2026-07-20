@@ -152,11 +152,11 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                 # 8. Upsert vectors to Qdrant Cloud theo BATCH.
                 # Doc lớn -> hàng nghìn point; upsert 1 lần dễ "write operation timed out"
                 # (nhất là Qdrant Cloud region xa). Chia nhỏ để mỗi request gọn & retry-safe.
-                UPSERT_BATCH = 100
-                for i in range(0, len(points), UPSERT_BATCH):
+                upsert_batch = 100
+                for i in range(0, len(points), upsert_batch):
                     qdrant.upsert(
                         collection_name=settings.QDRANT_COLLECTION_NAME,
-                        points=points[i : i + UPSERT_BATCH],
+                        points=points[i : i + upsert_batch],
                         wait=True,
                     )
 
