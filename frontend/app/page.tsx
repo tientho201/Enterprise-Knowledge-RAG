@@ -89,9 +89,9 @@ function ThinkingIndicator() {
 export default function Page() {
   const {
     documents,
-    activeDocs,
-    setActiveDocs,
+    toggleDocActive,
     activeSession,
+    activeSessionId,
     customModels,
     setCustomModels,
     ragSettings,
@@ -137,17 +137,18 @@ export default function Page() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [activeSession?.messages, isLlmGenerating])
 
+  // Tài liệu thuộc hội thoại đang mở. Panel hiện TẤT CẢ (cả active lẫn inactive) để người
+  // dùng thấy đã upload gì vào kho của đoạn chat này; tick = active (dùng cho truy vấn).
+  const conversationDocs = documents.filter(d => d.conversation_id === activeSessionId)
+  const activeIndexedCount = conversationDocs.filter(d => d.status === "indexed" && d.is_active).length
+  const indexedCount = conversationDocs.filter(d => d.status === "indexed").length
+
   // --- Handlers ---
   const handleToggleDoc = (docId: string) => {
-    // Chỉ cho chọn tài liệu đã index xong — doc pending/processing/failed chưa có
-    // vector nên đưa vào ngữ cảnh chat sẽ vô nghĩa.
-    const doc = documents.find(d => d.id === docId)
-    if (!doc || doc.status !== "indexed") return
-    if (activeDocs.includes(docId)) {
-      setActiveDocs(activeDocs.filter(id => id !== docId))
-    } else {
-      setActiveDocs([...activeDocs, docId])
-    }
+    // Đang truy vấn → khóa chọn để tránh đổi tập tài liệu giữa chừng gây lỗi.
+    if (isLlmGenerating) return
+    // Bật/tắt is_active (lưu ở backend). Tài liệu vẫn hiện trong panel, chỉ đổi tick.
+    toggleDocActive(docId)
   }
 
   const handleSend = () => {
@@ -325,9 +326,9 @@ export default function Page() {
               <span>{ragSettings.model}</span>
               <span className="text-neutral-700">·</span>
               <span className="text-neutral-600">
-                {activeDocs.length === documents.length 
-                  ? "Tất cả tài liệu" 
-                  : `${activeDocs.length}/${documents.length} tài liệu`}
+                {indexedCount > 0
+                  ? `${activeIndexedCount}/${indexedCount} tài liệu`
+                  : "Chưa có tài liệu"}
               </span>
             </div>
           </div>
@@ -661,18 +662,28 @@ export default function Page() {
               {/* Document List */}
               <div className="space-y-3">
                 <div className="flex justify-between items-center text-[10px] font-semibold text-neutral-500 uppercase tracking-wider">
-                  <span>Kho tài liệu ({documents.length})</span>
+                  <span>Kho tài liệu ({conversationDocs.length})</span>
+                  {isLlmGenerating && (
+                    <span className="text-amber-400/70 normal-case font-normal">Đang truy vấn — khóa chọn</span>
+                  )}
                 </div>
 
-                <div className="space-y-1.5 max-h-[320px] overflow-y-auto pr-1 scrollbar-thin">
-                  {documents.map((doc) => {
+                {conversationDocs.length === 0 && (
+                  <p className="text-[11px] text-neutral-600 leading-relaxed py-2">
+                    Chưa có tài liệu nào trong hội thoại này. Tải tài liệu lên (bên dưới) để dùng cho câu trả lời.
+                  </p>
+                )}
+
+                <div className={`space-y-1.5 max-h-[320px] overflow-y-auto pr-1 scrollbar-thin ${isLlmGenerating ? "opacity-60 pointer-events-none" : ""}`}>
+                  {conversationDocs.map((doc) => {
                     const isIndexed = doc.status === "indexed";
-                    const isChecked = isIndexed && activeDocs.includes(doc.id);
+                    // checkbox = active (chỉ doc đã index xong mới chọn được cho RAG).
+                    const isChecked = isIndexed && doc.is_active;
                     return (
                       <div
                         key={doc.id}
-                        onClick={() => handleToggleDoc(doc.id)}
-                        title={isIndexed ? undefined : "Tài liệu chưa xử lý xong — chưa thể chọn"}
+                        onClick={() => isIndexed && handleToggleDoc(doc.id)}
+                        title={isIndexed ? (doc.is_active ? "Bấm để bỏ chọn (không dùng cho truy vấn)" : "Bấm để chọn dùng cho truy vấn") : "Tài liệu chưa xử lý xong"}
                         className={`p-3 rounded-xl border text-[12px] transition-all flex items-start justify-between gap-3 ${
                           !isIndexed
                             ? "cursor-not-allowed opacity-60 bg-transparent border-white/[0.04] text-neutral-500"

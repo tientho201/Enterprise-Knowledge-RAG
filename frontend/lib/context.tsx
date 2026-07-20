@@ -81,8 +81,10 @@ export interface RagSettings {
 interface AppContextType {
   documents: Document[];
   setDocuments: React.Dispatch<React.SetStateAction<Document[]>>;
-  activeDocs: string[];
-  setActiveDocs: React.Dispatch<React.SetStateAction<string[]>>;
+  // Bật/tắt tài liệu (is_active). Chỉ doc active mới hiện ở panel hội thoại + được RAG dùng.
+  toggleDocActive: (docId: string) => Promise<void>;
+  // Gắn/gỡ tài liệu khỏi một hội thoại (dùng ở trang document-library).
+  assignDocConversation: (docId: string, conversationId: string | null) => Promise<void>;
   chatSessions: ChatSession[];
   setChatSessions: React.Dispatch<React.SetStateAction<ChatSession[]>>;
   activeSessionId: string;
@@ -116,7 +118,9 @@ interface AppContextType {
   setIsLlmGenerating: React.Dispatch<React.SetStateAction<boolean>>;
   showRagProcessId: string | null;
   setShowRagProcessId: React.Dispatch<React.SetStateAction<string | null>>;
-  processFile: (file: File) => Promise<void>;
+  // attachToConversation=true (mặc định, upload từ màn chat) → gắn vào hội thoại đang mở.
+  // false (upload từ trang document-library) → không gắn hội thoại nào (vào kho tổng).
+  processFile: (file: File, attachToConversation?: boolean) => Promise<void>;
   deleteDocument: (docId: string) => Promise<void>;
   reindexDocument: (docId: string) => Promise<void>;
   loadConversation: (conversationId: string) => Promise<void>;
@@ -187,7 +191,6 @@ function createEmptySession(): ChatSession {
 export function AppContextProvider({ children }: { children: React.ReactNode }) {
   // --- States ---
   const [documents, setDocuments] = useState<Document[]>([])
-  const [activeDocs, setActiveDocs] = useState<string[]>([])
 
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([createEmptySession()])
   const [activeSessionId, setActiveSessionId] = useState<string>(chatSessions[0]?.id || "")
@@ -202,7 +205,7 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
   const [ragSettings, setRagSettings] = useState<RagSettings>({
     searchMode: "Lai (Hybrid)",
     model: "Gemini 1.5 Flash",
-    topK: 4,
+    topK: 8,
     similarityThreshold: 0.25,
     systemPrompt: "Bạn là trợ lý pháp lý AI chuyên nghiệp của doanh nghiệp. Hãy dùng các tài liệu được cung cấp dưới đây để trả lời câu hỏi một cách trung thực và chính xác. Trích dẫn rõ ràng Điều, Khoản và Tên tài liệu khi trả lời. Nếu không tìm thấy thông tin trong tài liệu, hãy báo cho người dùng biết."
   })
@@ -286,14 +289,8 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
   const refreshDocuments = useCallback(async () => {
     try {
       const data = await documentsAPI.list(1, 100)
+      // is_active + conversation_id đến từ backend (nguồn sự thật). Không dùng localStorage nữa.
       setDocuments(data.items)
-      
-      // Only set activeDocs to default if not already configured in localStorage for current session
-      const currentActiveId = localStorage.getItem("active_session_id") || "new";
-      const saved = localStorage.getItem(`active_docs_${currentActiveId}`);
-      if (!saved) {
-        setActiveDocs(data.items.filter(d => d.status === "indexed").map(d => d.id))
-      }
     } catch (err) {
       console.error("Failed to load documents:", err)
     }
@@ -409,35 +406,8 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     }
   }, [activeSessionId])
 
-  // Load activeDocs for the newly active session
-  useEffect(() => {
-    if (!activeSessionId) return;
-    
-    // Read from localStorage
-    const saved = localStorage.getItem(`active_docs_${activeSessionId}`);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          setActiveDocs(parsed);
-          return;
-        }
-      } catch (e) {
-        // ignore JSON parse errors
-      }
-    }
-    
-    // Default to all indexed documents if not found in localStorage
-    const indexedDocIds = documents.filter(d => d.status === "indexed").map(d => d.id);
-    setActiveDocs(indexedDocIds);
-  }, [activeSessionId, documents]);
-
-  // Save activeDocs to localStorage whenever it changes for the active session
-  useEffect(() => {
-    if (!activeSessionId || (activeSessionId.startsWith("new-") && activeDocs.length === 0)) return;
-    
-    localStorage.setItem(`active_docs_${activeSessionId}`, JSON.stringify(activeDocs));
-  }, [activeDocs, activeSessionId]);
+  // active/inactive giờ là thuộc tính is_active trên document (lưu ở backend) — không còn
+  // quản lý qua localStorage theo session nữa.
 
   // ============================================================
   // Auth Operations
@@ -491,7 +461,6 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     clearTokens()
     setChatSessions([createEmptySession()])
     setDocuments([])
-    setActiveDocs([])
   }
 
   // ============================================================
@@ -594,16 +563,26 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       const conversationId = currentSession.id.startsWith("new-") ? null : currentSession.id
       let accumulated = ""
 
-      await chatAPI.sendMessageStream(messageText, conversationId, searchTool, activeDocs, {
-        // Nhận id hội thoại thật sớm → migrate session "new-..." + localStorage docs
-        onMeta: (convId) => {
+      // RAG chỉ dùng tài liệu ĐÃ gắn vào hội thoại này VÀ đang active (đã index xong).
+      const convDocIds = documents
+        .filter(d => d.status === "indexed" && d.is_active && d.conversation_id === currentSession.id)
+        .map(d => d.id)
+
+      await chatAPI.sendMessageStream(messageText, conversationId, searchTool, convDocIds, {
+        // Nhận id hội thoại thật sớm → migrate session "new-..." + gắn tài liệu đã upload
+        onMeta: (convId: string) => {
           if (currentSession.id.startsWith("new-")) {
-            const savedDocs = localStorage.getItem(`active_docs_${currentSession.id}`)
-            if (savedDocs) {
-              localStorage.setItem(`active_docs_${convId}`, savedDocs)
-              localStorage.removeItem(`active_docs_${currentSession.id}`)
-            }
-            setChatSessions(prev => prev.map(s => s.id === currentSession.id ? { ...s, id: convId } : s))
+            const oldId = currentSession.id
+            // Gắn các tài liệu đã upload trong session mới (chưa lưu) sang hội thoại thật (backend)
+            documents
+              .filter(d => d.conversation_id === oldId)
+              .forEach(d => {
+                documentsAPI.assignConversation(d.id, convId).catch(err =>
+                  console.error("Failed to assign document to conversation:", err)
+                )
+              })
+            setDocuments(prev => prev.map(d => d.conversation_id === oldId ? { ...d, conversation_id: convId } : d))
+            setChatSessions(prev => prev.map(s => s.id === oldId ? { ...s, id: convId } : s))
             setActiveSessionId(convId)
           }
         },
@@ -628,7 +607,7 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
           patchAssistant({ content: `Lỗi từ server: ${detail}`, isStreaming: false })
           setIsLlmGenerating(false)
         },
-      })
+      }, ragSettings.topK, ragSettings.similarityThreshold)
     } catch (err) {
       console.error("Failed to send message:", err)
       const errorContent = err instanceof ApiError
@@ -642,7 +621,7 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
   // ============================================================
   // Document Operations
   // ============================================================
-  const processFile = async (file: File) => {
+  const processFile = async (file: File, attachToConversation: boolean = true) => {
     if (uploadProgress?.isUploading) return
 
     setUploadProgress({
@@ -652,10 +631,22 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       isUploading: true
     })
 
+    // attachToConversation=false (upload ở trang document-library) → không gắn hội thoại nào,
+    // tài liệu vào kho tổng. =true (upload ở màn chat) → gắn vào hội thoại đang mở.
+    // Session chưa lưu ("new-...") → backend nhận null, nhưng gắn conversation_id local để
+    // tài liệu hiện ngay ở panel; khi hội thoại được lưu (onMeta) sẽ đồng bộ backend.
+    const uploadSessionId = activeSessionId
+    const localConvId = attachToConversation ? uploadSessionId : null
+    const backendConvId = attachToConversation && !uploadSessionId.startsWith("new-")
+      ? uploadSessionId
+      : null
+
     try {
       // Step 1: Upload
       setUploadProgress(prev => prev ? { ...prev, progress: 30, stepText: 'Đang tải file lên server...' } : null)
-      const doc = await documentsAPI.upload(file)
+      const uploaded = await documentsAPI.upload(file, backendConvId)
+      // Giữ liên kết local với session hiện tại (kể cả session mới chưa lưu)
+      const doc = { ...uploaded, conversation_id: uploaded.conversation_id ?? localConvId }
 
       // Step 2: Document is uploaded, backend processes it
       setUploadProgress(prev => prev ? { ...prev, progress: 60, stepText: 'Đã tải lên — đang chờ backend xử lý...' } : null)
@@ -673,11 +664,11 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
           attempts++
           try {
             const updated = await documentsAPI.getById(doc.id)
-            setDocuments(prev => prev.map(d => d.id === doc.id ? updated : d))
+            // Giữ conversation_id local (backend có thể vẫn null nếu hội thoại chưa lưu)
+            setDocuments(prev => prev.map(d => d.id === doc.id ? { ...updated, conversation_id: d.conversation_id ?? updated.conversation_id } : d))
 
             if (updated.status === "indexed") {
               clearInterval(pollInterval)
-              setActiveDocs(prev => [...prev, doc.id])
               setUploadProgress(null)
               addAuditLog(`Đã indexing tài liệu: ${file.name}`, "upload", `Kích thước: ${(file.size / 1024).toFixed(0)} KB | Trạng thái: Sẵn sàng`)
               refreshAuditLogs()
@@ -701,7 +692,6 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
         }, 3000)
       } else if (doc.status === "indexed") {
         // Already indexed instantly
-        setActiveDocs(prev => [...prev, doc.id])
         setUploadProgress(null)
         addAuditLog(`Đã indexing tài liệu: ${file.name}`, "upload", `Kích thước: ${(file.size / 1024).toFixed(0)} KB | Trạng thái: Sẵn sàng`)
         refreshAuditLogs()
@@ -722,15 +712,48 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
   }
 
   const deleteDocument = async (docId: string) => {
+    const docName = documents.find(d => d.id === docId)?.name || docId
     try {
       await documentsAPI.delete(docId)
       setDocuments(prev => prev.filter(d => d.id !== docId))
-      setActiveDocs(prev => prev.filter(id => id !== docId))
-      const docName = documents.find(d => d.id === docId)?.name || docId
       addAuditLog(`Đã xóa tài liệu: ${docName}`, "upload")
       refreshAuditLogs()
     } catch (err) {
       console.error("Failed to delete document:", err)
+      const msg = err instanceof ApiError ? err.detail : "Không thể xóa tài liệu. Vui lòng thử lại."
+      addAuditLog(`Lỗi xóa tài liệu: ${docName}`, "upload", msg)
+      // Ném lại để UI hiển thị lỗi cho người dùng (card không biến mất khi thất bại)
+      throw err
+    }
+  }
+
+  const toggleDocActive = async (docId: string) => {
+    const doc = documents.find(d => d.id === docId)
+    if (!doc) return
+    const next = !doc.is_active
+    // Optimistic: đổi UI ngay, revert nếu API lỗi
+    setDocuments(prev => prev.map(d => d.id === docId ? { ...d, is_active: next } : d))
+    try {
+      await documentsAPI.setActive(docId, next)
+      addAuditLog(`${next ? "Kích hoạt" : "Ngắt kích hoạt"} tài liệu: ${doc.name}`, "config")
+    } catch (err) {
+      console.error("Failed to toggle document active:", err)
+      setDocuments(prev => prev.map(d => d.id === docId ? { ...d, is_active: !next } : d))
+    }
+  }
+
+  const assignDocConversation = async (docId: string, conversationId: string | null) => {
+    const doc = documents.find(d => d.id === docId)
+    if (!doc) return
+    const prevConvId = doc.conversation_id
+    setDocuments(prev => prev.map(d => d.id === docId ? { ...d, conversation_id: conversationId } : d))
+    try {
+      const updated = await documentsAPI.assignConversation(docId, conversationId)
+      setDocuments(prev => prev.map(d => d.id === docId ? { ...updated, conversation_title: null } : d))
+      addAuditLog(`Cập nhật hội thoại cho tài liệu: ${doc.name}`, "config")
+    } catch (err) {
+      console.error("Failed to assign conversation:", err)
+      setDocuments(prev => prev.map(d => d.id === docId ? { ...d, conversation_id: prevConvId } : d))
     }
   }
 
@@ -801,8 +824,8 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     <AppContext.Provider value={{
       documents,
       setDocuments,
-      activeDocs,
-      setActiveDocs,
+      toggleDocActive,
+      assignDocConversation,
       chatSessions,
       setChatSessions,
       activeSessionId,

@@ -1,51 +1,59 @@
 "use client"
 
 import React, { useState, useRef } from "react"
-import { 
-  FileText, 
-  Search, 
-  UploadCloud, 
-  Check, 
-  Trash2, 
-  Database, 
-  Calendar, 
-  HardDrive, 
-  Layers, 
-  Info, 
-  ChevronRight, 
-  BookOpen, 
+import { useRouter } from "next/navigation"
+import {
+  FileText,
+  Search,
+  UploadCloud,
+  Check,
+  Trash2,
+  Database,
+  Calendar,
+  HardDrive,
+  Layers,
+  Info,
+  ChevronRight,
+  BookOpen,
   X,
   PanelLeftOpen,
-  RefreshCw
+  RefreshCw,
+  MessageSquare
 } from "lucide-react"
 import { useApp } from "@/lib/context"
 import { Button } from "@/components/ui/button"
 import { type Document } from "@/lib/api"
 
 export default function DocumentLibrary() {
-  const { 
-    documents, 
-    setDocuments,
-    activeDocs, 
-    setActiveDocs, 
-    uploadProgress, 
+  const {
+    documents,
+    uploadProgress,
     processFile,
     deleteDocument,
     reindexDocument,
+    toggleDocActive,
+    assignDocConversation,
+    chatSessions,
     showLeftSidebar,
     setShowLeftSidebar,
-    addAuditLog
+    setActiveSessionId,
+    loadConversation,
   } = useApp()
+
+  // Hội thoại đã lưu (bỏ session mới chưa lưu "new-...") để gắn tài liệu
+  const savedConversations = chatSessions.filter(s => !s.id.startsWith("new-"))
+
+  const router = useRouter()
 
   const [searchQuery, setSearchQuery] = useState("")
   const [filterType, setFilterType] = useState<"all" | "pdf" | "docx" | "txt">("all")
   const [selectedDocForDetail, setSelectedDocForDetail] = useState<Document | null>(null)
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Calculate statistics
   const totalFiles = documents.length
-  const activeFiles = activeDocs.length
+  const activeFiles = documents.filter(d => d.is_active).length
   const totalChunks = documents.length // We don't have local chunk count from API
   
   // Format total size (e.g. "4.45 MB")
@@ -64,28 +72,35 @@ export default function DocumentLibrary() {
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault()
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      processFile(e.dataTransfer.files[0])
+      // Upload ở trang thư viện → không gắn hội thoại nào (vào kho tổng)
+      processFile(e.dataTransfer.files[0], false)
     }
   }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      processFile(e.target.files[0])
+      processFile(e.target.files[0], false)
     }
   }
 
   const handleToggleDoc = (docId: string) => {
-    if (activeDocs.includes(docId)) {
-      setActiveDocs(activeDocs.filter(id => id !== docId))
-      addAuditLog(`Đã ngắt kích hoạt RAG cho tài liệu: ${documents.find(d => d.id === docId)?.name}`, "config")
-    } else {
-      setActiveDocs([...activeDocs, docId])
-      addAuditLog(`Đã kích hoạt RAG cho tài liệu: ${documents.find(d => d.id === docId)?.name}`, "config")
-    }
+    toggleDocActive(docId)
   }
 
   const handleDeleteDoc = async (docId: string, docName: string) => {
-    await deleteDocument(docId)
+    if (!confirm(`Xóa tài liệu "${docName}"? Hành động này không thể hoàn tác.`)) return
+    try {
+      await deleteDocument(docId)
+    } catch {
+      alert("Không thể xóa tài liệu. Vui lòng thử lại.")
+    }
+  }
+
+  // Nhảy tới hội thoại đã gắn tài liệu
+  const handleJumpToConversation = (conversationId: string) => {
+    setActiveSessionId(conversationId)
+    loadConversation(conversationId)
+    router.push("/")
   }
 
   // Filter documents
@@ -222,7 +237,7 @@ export default function DocumentLibrary() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {filteredDocs.map((doc) => {
-                  const isChecked = activeDocs.includes(doc.id);
+                  const isChecked = doc.is_active;
                   return (
                     <div
                       key={doc.id}
@@ -270,6 +285,32 @@ export default function DocumentLibrary() {
                         <p className="text-[11px] text-neutral-400/80 leading-relaxed line-clamp-2">
                           {doc.source || `${doc.type.toUpperCase()} document`}
                         </p>
+
+                        {/* Hội thoại đã gắn — bấm để nhảy tới */}
+                        {doc.conversation_id && (
+                          <button
+                            onClick={() => handleJumpToConversation(doc.conversation_id!)}
+                            title="Mở hội thoại đã gắn tài liệu này"
+                            className="flex items-center gap-1.5 text-[10px] text-sky-400/70 hover:text-sky-300 transition-colors max-w-full cursor-pointer"
+                          >
+                            <MessageSquare className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{doc.conversation_title || "Hội thoại"}</span>
+                            <ChevronRight className="w-3 h-3 shrink-0" />
+                          </button>
+                        )}
+
+                        {/* Chọn/đổi hội thoại cho tài liệu */}
+                        <select
+                          value={doc.conversation_id || ""}
+                          onChange={(e) => assignDocConversation(doc.id, e.target.value || null)}
+                          className="w-full bg-[#0f0f0f]/60 border border-white/[0.06] rounded-lg px-2 py-1 text-[10px] text-neutral-400 focus:outline-none focus:border-sky-500/20 cursor-pointer"
+                          title="Gắn tài liệu vào một hội thoại"
+                        >
+                          <option value="">Kho tổng (chưa gắn hội thoại)</option>
+                          {savedConversations.map(s => (
+                            <option key={s.id} value={s.id}>{s.title || "Hội thoại"}</option>
+                          ))}
+                        </select>
                       </div>
 
                       {/* Footer Info */}

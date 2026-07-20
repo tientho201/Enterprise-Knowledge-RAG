@@ -210,6 +210,9 @@ export interface Document {
   version: number;
   source: string | null;
   file_size: number | null;
+  is_active: boolean;
+  conversation_id: string | null;
+  conversation_title: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -282,7 +285,9 @@ export const chatAPI = {
     conversation_id: string | null | undefined,
     search_tool: boolean | null | undefined,
     document_ids: string[] | null | undefined,
-    cb: StreamCallbacks
+    cb: StreamCallbacks,
+    top_k?: number | null,
+    similarity_threshold?: number | null
   ): Promise<void> {
     const res = await apiFetch("/api/v1/chat/stream", {
       method: "POST",
@@ -292,6 +297,8 @@ export const chatAPI = {
         conversation_id: conversation_id || null,
         search_tool: search_tool !== undefined ? search_tool : null,
         documentIds: document_ids || null,
+        topK: top_k ?? null,
+        similarityThreshold: similarity_threshold ?? null,
       }),
     });
 
@@ -387,9 +394,13 @@ export const chatAPI = {
 // ============================================================
 
 export const documentsAPI = {
-  async upload(file: File): Promise<Document> {
+  async upload(file: File, conversationId?: string | null): Promise<Document> {
     const formData = new FormData();
     formData.append("file", file);
+    // Gắn tài liệu vào hội thoại (upload từ màn chat). Bỏ qua khi upload ở kho tổng.
+    if (conversationId) {
+      formData.append("conversation_id", conversationId);
+    }
 
     const res = await apiFetch("/api/v1/documents/upload", {
       method: "POST",
@@ -425,6 +436,27 @@ export const documentsAPI = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ document_id: documentId }),
+    });
+    return handleResponse<Document>(res);
+  },
+
+  async setActive(docId: string, isActive: boolean): Promise<Document> {
+    const res = await apiFetch(`/api/v1/documents/${docId}/active`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_active: isActive }),
+    });
+    return handleResponse<Document>(res);
+  },
+
+  async assignConversation(
+    docId: string,
+    conversationId: string | null
+  ): Promise<Document> {
+    const res = await apiFetch(`/api/v1/documents/${docId}/conversation`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: conversationId }),
     });
     return handleResponse<Document>(res);
   },
