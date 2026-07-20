@@ -9,9 +9,11 @@ class CitationSchema(BaseModel):
     chunk_id: str
     document_id: str
     document_name: str
-    page_number: int | None
-    section_title: str | None
-    source_link: str | None
+    # Optional metadata: nhiều nguồn (RAG chunk) không có → default None để Pydantic
+    # KHÔNG coi là bắt buộc (X | None không có default vẫn là required).
+    page_number: int | None = None
+    section_title: str | None = None
+    source_link: str | None = None
     content_snippet: str
 
     model_config = {"from_attributes": True}

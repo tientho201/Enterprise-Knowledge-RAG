@@ -36,6 +36,9 @@ def _build_context(state: AgentState) -> tuple[str, list[dict]]:
                 "chunk_id": chunk.chunk_id,
                 "document_id": chunk.document_id,
                 "document_name": chunk.document_name,
+                "page_number": None,
+                "section_title": None,
+                "source_link": None,
                 "content_snippet": chunk.content[:200],
                 "score": chunk.score,
             }

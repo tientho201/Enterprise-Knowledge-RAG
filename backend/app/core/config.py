@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     APP_NAME: str = "Enterprise Knowledge RAG"
     APP_ENV: str = "development"
     DEBUG: bool = False
+    # Echo mọi câu SQL ra log. Tách khỏi DEBUG vì DEBUG=true (dev) mà bật echo sẽ
+    # làm log "nhảy liên tục" (mỗi request chat = hàng chục câu SQL). Mặc định tắt.
+    DB_ECHO: bool = False
     SECRET_KEY: str = "changeme"
     API_V1_PREFIX: str = "/api/v1"
 

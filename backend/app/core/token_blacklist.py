@@ -22,8 +22,9 @@ async def blacklist_token(jti: str, exp: int | float) -> None:
         return  # token đã hết hạn — không cần lưu
     try:
         await get_redis().set(f"{_PREFIX}{jti}", "1", ex=ttl)
-    except Exception:  # noqa: BLE001 — Redis down: logout best-effort, không chặn user
-        logger.warning("Redis unavailable — không thể blacklist token %s", jti, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — Redis down: logout best-effort, khong chan user
+        # Log gon 1 dong (khong traceback) — day la truong hop mong doi khi Redis sap.
+        logger.warning("Redis unavailable - could not blacklist token (best-effort): %s", exc)
 
 
 async def is_blacklisted(jti: str | None) -> bool:
@@ -31,6 +32,7 @@ async def is_blacklisted(jti: str | None) -> bool:
         return False
     try:
         return await get_redis().exists(f"{_PREFIX}{jti}") == 1
-    except Exception:  # noqa: BLE001 — fail-open: Redis down không được khoá toàn bộ auth
-        logger.warning("Redis unavailable — bỏ qua kiểm tra blacklist (fail-open)", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — fail-open: Redis down khong duoc khoa toan bo auth
+        # Log gon 1 dong (khong traceback) — fail-open la hanh vi mong doi khi Redis sap.
+        logger.warning("Redis unavailable - skip blacklist check (fail-open): %s", exc)
         return False
