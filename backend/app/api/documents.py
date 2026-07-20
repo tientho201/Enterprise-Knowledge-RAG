@@ -1,10 +1,16 @@
-from fastapi import APIRouter, Depends, Query, UploadFile
+from fastapi import APIRouter, Depends, Form, Query, UploadFile
 
 from app.core.config import settings
 from app.core.dependencies import CurrentUserDep, DbDep
 from app.core.rate_limit import rate_limiter
 from app.models.user import UserRole
-from app.schemas.document import DocumentListResponse, DocumentResponse, ReindexRequest
+from app.schemas.document import (
+    AssignConversationRequest,
+    DocumentListResponse,
+    DocumentResponse,
+    ReindexRequest,
+    SetActiveRequest,
+)
 from app.services.document_service import DocumentService
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -22,10 +28,18 @@ def _is_admin(user) -> bool:
         Depends(rate_limiter(settings.UPLOAD_RATE_LIMIT_PER_MINUTE, 60, "upload")),
     ],
 )
-async def upload_document(file: UploadFile, user: CurrentUserDep, db: DbDep):
-    """Upload a document. Raw file → S3. Metadata → Supabase. Ingestion dispatched async."""
+async def upload_document(
+    file: UploadFile,
+    user: CurrentUserDep,
+    db: DbDep,
+    conversation_id: str | None = Form(default=None),
+):
+    """Upload a document. Raw file → S3. Metadata → Supabase. Ingestion dispatched async.
+
+    conversation_id (form, optional): gắn tài liệu vào hội thoại (upload từ màn chat).
+    """
     service = DocumentService(db)
-    return await service.upload(file, user_id=user.id)
+    return await service.upload(file, user_id=user.id, conversation_id=conversation_id)
 
 
 @router.get("", response_model=DocumentListResponse)
@@ -77,3 +91,25 @@ async def reindex_document(body: ReindexRequest, user: CurrentUserDep, db: DbDep
     """Re-download from S3 and rebuild all vectors. S3 file is preserved."""
     service = DocumentService(db)
     return await service.reindex(body.document_id, user_id=user.id, is_admin=_is_admin(user))
+
+
+@router.patch("/{doc_id}/active", response_model=DocumentResponse)
+async def set_document_active(
+    doc_id: str, body: SetActiveRequest, user: CurrentUserDep, db: DbDep
+):
+    """Bật/tắt tài liệu. Chỉ doc active mới hiện ở panel hội thoại + được RAG dùng."""
+    service = DocumentService(db)
+    return await service.set_active(
+        doc_id, user_id=user.id, is_active=body.is_active, is_admin=_is_admin(user)
+    )
+
+
+@router.patch("/{doc_id}/conversation", response_model=DocumentResponse)
+async def assign_document_conversation(
+    doc_id: str, body: AssignConversationRequest, user: CurrentUserDep, db: DbDep
+):
+    """Gắn/gỡ tài liệu khỏi một hội thoại. conversation_id=null → đưa về kho tổng."""
+    service = DocumentService(db)
+    return await service.assign_conversation(
+        doc_id, user_id=user.id, conversation_id=body.conversation_id, is_admin=_is_admin(user)
+    )

@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDMixin
@@ -39,6 +39,14 @@ class Document(Base, UUIDMixin, TimestampMixin):
     owner_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Hội thoại đã upload tài liệu này (per-conversation library). Nullable: upload từ trang
+    # document-library (kho tổng) hoặc doc legacy trước migration này → không gắn hội thoại.
+    # SET NULL khi hội thoại bị xóa để giữ lại tài liệu.
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Bật/tắt tài liệu: chỉ doc active mới hiện ở panel hội thoại và được RAG dùng.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     type: Mapped[DocumentType] = mapped_column(Enum(DocumentType), nullable=False)
     status: Mapped[DocumentStatus] = mapped_column(
         Enum(DocumentStatus), nullable=False, default=DocumentStatus.pending

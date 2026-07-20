@@ -13,6 +13,9 @@ class DocumentResponse(BaseModel):
     version: int
     source: str | None
     file_size: int | None
+    is_active: bool
+    conversation_id: str | None = None
+    conversation_title: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -28,3 +31,12 @@ class DocumentListResponse(BaseModel):
 
 class ReindexRequest(BaseModel):
     document_id: str
+
+
+class SetActiveRequest(BaseModel):
+    is_active: bool
+
+
+class AssignConversationRequest(BaseModel):
+    # None → gỡ khỏi hội thoại (đưa về kho tổng)
+    conversation_id: str | None = None

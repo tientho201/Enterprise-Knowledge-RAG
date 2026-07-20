@@ -11,8 +11,10 @@ import uuid
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.conversation import Conversation
 from app.models.document import DocumentType
 from app.repositories.audit_log_repo import AuditLogRepository
+from app.repositories.conversation_repo import ConversationRepository
 from app.repositories.document_repo import DocumentRepository
 from app.schemas.document import DocumentListResponse, DocumentResponse
 from app.storage.s3_client import (
@@ -37,9 +39,16 @@ class DocumentService:
 
     # ── Upload ────────────────────────────────────────────────────────────────
 
-    async def upload(self, file: UploadFile, user_id: str | None = None) -> DocumentResponse:
+    async def upload(
+        self,
+        file: UploadFile,
+        user_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> DocumentResponse:
         """
         Validate → upload raw file to S3 → save metadata to Supabase → dispatch Celery task.
+
+        conversation_id: gắn tài liệu vào hội thoại (upload từ màn chat). None → kho tổng.
         """
         if file.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(
@@ -58,6 +67,13 @@ class DocumentService:
         object_name = f"{uuid.uuid4()}/{file.filename}"
         await upload_bytes_async(object_name, file_bytes, content_type=file.content_type)
 
+        # Chỉ gắn hội thoại nếu nó thuộc về user (tránh gắn nhầm sang hội thoại người khác)
+        valid_conversation_id = None
+        if conversation_id and user_id:
+            conv = await ConversationRepository(self.db).get_by_id(conversation_id, user_id)
+            if conv:
+                valid_conversation_id = conversation_id
+
         # 2. Save document metadata to Supabase/PostgreSQL
         doc_type = ALLOWED_CONTENT_TYPES[file.content_type]
         doc = await self.repo.create(
@@ -66,6 +82,7 @@ class DocumentService:
             storage_path=object_name,  # S3 object key — used by Celery task to download
             file_size=len(file_bytes),
             owner_id=user_id,  # data isolation: gắn chủ sở hữu = người upload
+            conversation_id=valid_conversation_id,  # per-conversation library
         )
 
         # 3. Write audit log to Supabase
@@ -112,9 +129,16 @@ class DocumentService:
         skip = (page - 1) * page_size
         # Admin: owner_id=None → thấy tất cả. Ngược lại: chỉ doc của chính user.
         owner_filter = None if is_admin else user_id
-        docs, total = await self.repo.list_active(skip=skip, limit=page_size, owner_id=owner_filter)
+        rows, total = await self.repo.list_with_conversation(
+            skip=skip, limit=page_size, owner_id=owner_filter
+        )
+        items = []
+        for doc, conv_title in rows:
+            resp = DocumentResponse.model_validate(doc)
+            resp.conversation_title = conv_title
+            items.append(resp)
         return DocumentListResponse(
-            items=[DocumentResponse.model_validate(d) for d in docs],
+            items=items,
             total=total,
             page=page,
             page_size=page_size,
@@ -190,4 +214,36 @@ class DocumentService:
 
         reindex_document.delay(doc_id, doc.storage_path)
 
+        return DocumentResponse.model_validate(doc)
+
+    # ── Active toggle & conversation assignment ────────────────────────────────
+
+    async def set_active(
+        self, doc_id: str, user_id: str, is_active: bool, is_admin: bool = False
+    ) -> DocumentResponse:
+        """Bật/tắt tài liệu. Chỉ doc active mới hiện ở panel hội thoại + được RAG dùng."""
+        await self._get_owned_or_404(doc_id, user_id, is_admin)
+        doc = await self.repo.set_active(doc_id, is_active)
+        assert doc is not None  # _get_owned_or_404 đã đảm bảo tồn tại
+        return DocumentResponse.model_validate(doc)
+
+    async def assign_conversation(
+        self, doc_id: str, user_id: str, conversation_id: str | None, is_admin: bool = False
+    ) -> DocumentResponse:
+        """Gắn/gỡ tài liệu khỏi một hội thoại. conversation_id=None → đưa về kho tổng."""
+        await self._get_owned_or_404(doc_id, user_id, is_admin)
+
+        if conversation_id is not None:
+            # Non-admin: chỉ gắn vào hội thoại của chính mình. Admin: chỉ cần hội thoại tồn tại.
+            if is_admin:
+                conv = await self.db.get(Conversation, conversation_id)
+            else:
+                conv = await ConversationRepository(self.db).get_by_id(conversation_id, user_id)
+            if not conv:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+                )
+
+        doc = await self.repo.set_conversation(doc_id, conversation_id)
+        assert doc is not None
         return DocumentResponse.model_validate(doc)
