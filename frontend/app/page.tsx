@@ -93,6 +93,10 @@ export default function Page() {
 
   // --- Handlers ---
   const handleToggleDoc = (docId: string) => {
+    // Chỉ cho chọn tài liệu đã index xong — doc pending/processing/failed chưa có
+    // vector nên đưa vào ngữ cảnh chat sẽ vô nghĩa.
+    const doc = documents.find(d => d.id === docId)
+    if (!doc || doc.status !== "indexed") return
     if (activeDocs.includes(docId)) {
       setActiveDocs(activeDocs.filter(id => id !== docId))
     } else {
@@ -599,15 +603,19 @@ export default function Page() {
 
                 <div className="space-y-1.5 max-h-[320px] overflow-y-auto pr-1 scrollbar-thin">
                   {documents.map((doc) => {
-                    const isChecked = activeDocs.includes(doc.id);
+                    const isIndexed = doc.status === "indexed";
+                    const isChecked = isIndexed && activeDocs.includes(doc.id);
                     return (
                       <div
                         key={doc.id}
                         onClick={() => handleToggleDoc(doc.id)}
-                        className={`p-3 rounded-xl border text-[12px] cursor-pointer transition-all flex items-start justify-between gap-3 ${
-                          isChecked
-                            ? "bg-white/[0.03] border-emerald-500/15 text-neutral-200"
-                            : "bg-transparent border-white/[0.04] text-neutral-400 hover:bg-white/[0.02]"
+                        title={isIndexed ? undefined : "Tài liệu chưa xử lý xong — chưa thể chọn"}
+                        className={`p-3 rounded-xl border text-[12px] transition-all flex items-start justify-between gap-3 ${
+                          !isIndexed
+                            ? "cursor-not-allowed opacity-60 bg-transparent border-white/[0.04] text-neutral-500"
+                            : isChecked
+                              ? "cursor-pointer bg-white/[0.03] border-emerald-500/15 text-neutral-200"
+                              : "cursor-pointer bg-transparent border-white/[0.04] text-neutral-400 hover:bg-white/[0.02]"
                         }`}
                       >
                         <div className="min-w-0 flex-1 space-y-1">
@@ -631,14 +639,26 @@ export default function Page() {
                           </div>
                         </div>
 
-                        {/* Checkbox */}
-                        <div className={`w-4 h-4 rounded-md border mt-0.5 flex items-center justify-center shrink-0 transition-all ${
-                          isChecked 
-                            ? "bg-emerald-500/80 border-emerald-500/80 text-white" 
-                            : "border-white/[0.1] bg-transparent"
-                        }`}>
-                          {isChecked && <Check className="w-2.5 h-2.5 stroke-[3px]" />}
-                        </div>
+                        {/* Checkbox (indexed) hoặc badge trạng thái (chưa xong) */}
+                        {isIndexed ? (
+                          <div className={`w-4 h-4 rounded-md border mt-0.5 flex items-center justify-center shrink-0 transition-all ${
+                            isChecked
+                              ? "bg-emerald-500/80 border-emerald-500/80 text-white"
+                              : "border-white/[0.1] bg-transparent"
+                          }`}>
+                            {isChecked && <Check className="w-2.5 h-2.5 stroke-[3px]" />}
+                          </div>
+                        ) : doc.status === "failed" ? (
+                          <div className="flex items-center gap-1 text-[9px] font-medium text-red-400/80 shrink-0 mt-0.5">
+                            <AlertTriangle className="w-3 h-3" />
+                            <span>Lỗi</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1 text-[9px] font-medium text-amber-400/80 shrink-0 mt-0.5">
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                            <span>Đang xử lý</span>
+                          </div>
+                        )}
                       </div>
                     )
                   })}
