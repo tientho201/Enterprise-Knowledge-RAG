@@ -11,6 +11,7 @@ from app.db.base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.chunk import Chunk
+    from app.models.conversation import Conversation
 
 
 class DocumentStatus(enum.StrEnum):
@@ -39,12 +40,6 @@ class Document(Base, UUIDMixin, TimestampMixin):
     owner_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    # Hội thoại đã upload tài liệu này (per-conversation library). Nullable: upload từ trang
-    # document-library (kho tổng) hoặc doc legacy trước migration này → không gắn hội thoại.
-    # SET NULL khi hội thoại bị xóa để giữ lại tài liệu.
-    conversation_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True
-    )
     # Bật/tắt tài liệu: chỉ doc active mới hiện ở panel hội thoại và được RAG dùng.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     type: Mapped[DocumentType] = mapped_column(Enum(DocumentType), nullable=False)
@@ -60,4 +55,15 @@ class Document(Base, UUIDMixin, TimestampMixin):
 
     chunks: Mapped[list[Chunk]] = relationship(
         "Chunk", back_populates="document", cascade="all, delete-orphan"
+    )
+    # Hội thoại đã gắn tài liệu này (many-to-many, per-conversation library).
+    # viewonly: ghi/xóa liên kết qua DocumentConversation trong repo, không qua collection này.
+    # lazy="selectin": tự eager-load bất cứ khi nào doc được fetch, tránh lazy-load đồng bộ
+    # (không hợp lệ với AsyncSession) khi service/response serialization đọc thuộc tính này.
+    conversations: Mapped[list[Conversation]] = relationship(
+        "Conversation",
+        secondary="document_conversations",
+        viewonly=True,
+        order_by="Conversation.created_at",
+        lazy="selectin",
     )

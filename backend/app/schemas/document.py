@@ -5,6 +5,13 @@ from pydantic import BaseModel
 from app.models.document import DocumentStatus, DocumentType
 
 
+class ConversationRef(BaseModel):
+    id: str
+    title: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class DocumentResponse(BaseModel):
     id: str
     name: str
@@ -14,8 +21,7 @@ class DocumentResponse(BaseModel):
     source: str | None
     file_size: int | None
     is_active: bool
-    conversation_id: str | None = None
-    conversation_title: str | None = None
+    conversations: list[ConversationRef] = []
     created_at: datetime
     updated_at: datetime
 
@@ -37,6 +43,11 @@ class SetActiveRequest(BaseModel):
     is_active: bool
 
 
-class AssignConversationRequest(BaseModel):
-    # None → gỡ khỏi hội thoại (đưa về kho tổng)
-    conversation_id: str | None = None
+class AddConversationRequest(BaseModel):
+    conversation_id: str
+
+
+class SetConversationsRequest(BaseModel):
+    # Danh sách đầy đủ hội thoại gắn với tài liệu — thay thế toàn bộ liên kết cũ.
+    # [] → gỡ khỏi tất cả hội thoại (đưa về kho tổng).
+    conversation_ids: list[str] = []

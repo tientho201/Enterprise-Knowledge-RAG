@@ -1,10 +1,10 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.conversation import Conversation
 from app.models.document import Document, DocumentStatus, DocumentType
+from app.models.document_conversation import DocumentConversation
 
 
 class DocumentRepository:
@@ -34,10 +34,12 @@ class DocumentRepository:
             source=source,
             file_size=file_size,
             owner_id=owner_id,
-            conversation_id=conversation_id,
         )
         self.db.add(doc)
         await self.db.flush()
+        if conversation_id:
+            self.db.add(DocumentConversation(document_id=doc.id, conversation_id=conversation_id))
+            await self.db.flush()
         await self.db.refresh(doc)
         return doc
 
@@ -62,12 +64,26 @@ class DocumentRepository:
             await self.db.flush()
         return doc
 
-    async def set_conversation(self, doc_id: str, conversation_id: str | None) -> Document | None:
-        doc = await self.get_by_id(doc_id)
-        if doc:
-            doc.conversation_id = conversation_id
+    async def add_conversation_link(self, doc_id: str, conversation_id: str) -> None:
+        """Gắn thêm 1 hội thoại vào tài liệu (idempotent, không xóa liên kết cũ)."""
+        exists = await self.db.execute(
+            select(DocumentConversation.document_id).where(
+                DocumentConversation.document_id == doc_id,
+                DocumentConversation.conversation_id == conversation_id,
+            )
+        )
+        if exists.scalar_one_or_none() is None:
+            self.db.add(DocumentConversation(document_id=doc_id, conversation_id=conversation_id))
             await self.db.flush()
-        return doc
+
+    async def set_conversations(self, doc_id: str, conversation_ids: list[str]) -> None:
+        """Thay toàn bộ liên kết hội thoại của tài liệu bằng danh sách mới (rỗng → gỡ hết)."""
+        await self.db.execute(
+            delete(DocumentConversation).where(DocumentConversation.document_id == doc_id)
+        )
+        for conv_id in dict.fromkeys(conversation_ids):  # dedupe, giữ thứ tự
+            self.db.add(DocumentConversation(document_id=doc_id, conversation_id=conv_id))
+        await self.db.flush()
 
     async def soft_delete(self, doc_id: str) -> bool:
         doc = await self.get_by_id(doc_id)
@@ -77,13 +93,13 @@ class DocumentRepository:
             return True
         return False
 
-    async def list_with_conversation(
+    async def list_with_conversations(
         self, skip: int = 0, limit: int = 20, owner_id: str | None = None
-    ) -> tuple[list[tuple[Document, str | None]], int]:
-        """List active (chưa xóa) docs kèm tên hội thoại đã gắn.
+    ) -> tuple[list[Document], int]:
+        """List active (chưa xóa) docs kèm các hội thoại đã gắn (many-to-many).
 
         `owner_id=None` → tất cả (admin); có giá trị → chỉ doc của user đó.
-        Trả về list[(Document, conversation_title)] để service dựng DocumentResponse.
+        `doc.conversations` (eager-loaded) chứa list[Conversation] để service dựng DocumentResponse.
         """
         base_query = select(Document).where(Document.deleted_at.is_(None))
         if owner_id is not None:
@@ -94,14 +110,10 @@ class DocumentRepository:
         )
         total = count_result.scalar_one()
 
-        rows_query = (
-            select(Document, Conversation.title)
-            .outerjoin(Conversation, Document.conversation_id == Conversation.id)
-            .where(Document.deleted_at.is_(None))
-        )
+        rows_query = select(Document).where(Document.deleted_at.is_(None))
         if owner_id is not None:
             rows_query = rows_query.where(Document.owner_id == owner_id)
         rows_query = rows_query.order_by(Document.created_at.desc()).offset(skip).limit(limit)
 
         rows = await self.db.execute(rows_query)
-        return [(doc, title) for doc, title in rows.all()], total
+        return list(rows.scalars().all()), total

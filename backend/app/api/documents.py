@@ -5,11 +5,12 @@ from app.core.dependencies import CurrentUserDep, DbDep
 from app.core.rate_limit import rate_limiter
 from app.models.user import UserRole
 from app.schemas.document import (
-    AssignConversationRequest,
+    AddConversationRequest,
     DocumentListResponse,
     DocumentResponse,
     ReindexRequest,
     SetActiveRequest,
+    SetConversationsRequest,
 )
 from app.services.document_service import DocumentService
 
@@ -102,12 +103,23 @@ async def set_document_active(doc_id: str, body: SetActiveRequest, user: Current
     )
 
 
-@router.patch("/{doc_id}/conversation", response_model=DocumentResponse)
-async def assign_document_conversation(
-    doc_id: str, body: AssignConversationRequest, user: CurrentUserDep, db: DbDep
+@router.post("/{doc_id}/conversations", response_model=DocumentResponse)
+async def add_document_conversation(
+    doc_id: str, body: AddConversationRequest, user: CurrentUserDep, db: DbDep
 ):
-    """Gắn/gỡ tài liệu khỏi một hội thoại. conversation_id=null → đưa về kho tổng."""
+    """Gắn thêm 1 hội thoại vào tài liệu, giữ nguyên các liên kết đã có."""
     service = DocumentService(db)
-    return await service.assign_conversation(
+    return await service.add_conversation(
         doc_id, user_id=user.id, conversation_id=body.conversation_id, is_admin=_is_admin(user)
+    )
+
+
+@router.put("/{doc_id}/conversations", response_model=DocumentResponse)
+async def set_document_conversations(
+    doc_id: str, body: SetConversationsRequest, user: CurrentUserDep, db: DbDep
+):
+    """Thay toàn bộ hội thoại gắn với tài liệu. conversation_ids=[] → đưa về kho tổng."""
+    service = DocumentService(db)
+    return await service.set_conversations(
+        doc_id, user_id=user.id, conversation_ids=body.conversation_ids, is_admin=_is_admin(user)
     )

@@ -129,14 +129,10 @@ class DocumentService:
         skip = (page - 1) * page_size
         # Admin: owner_id=None → thấy tất cả. Ngược lại: chỉ doc của chính user.
         owner_filter = None if is_admin else user_id
-        rows, total = await self.repo.list_with_conversation(
+        rows, total = await self.repo.list_with_conversations(
             skip=skip, limit=page_size, owner_id=owner_filter
         )
-        items = []
-        for doc, conv_title in rows:
-            resp = DocumentResponse.model_validate(doc)
-            resp.conversation_title = conv_title
-            items.append(resp)
+        items = [DocumentResponse.model_validate(doc) for doc in rows]
         return DocumentListResponse(
             items=items,
             total=total,
@@ -227,23 +223,41 @@ class DocumentService:
         assert doc is not None  # _get_owned_or_404 đã đảm bảo tồn tại
         return DocumentResponse.model_validate(doc)
 
-    async def assign_conversation(
-        self, doc_id: str, user_id: str, conversation_id: str | None, is_admin: bool = False
+    async def _check_conversation_owned(
+        self, conversation_id: str, user_id: str, is_admin: bool
+    ) -> None:
+        """Non-admin: hội thoại phải thuộc về chính user. Admin: chỉ cần tồn tại."""
+        if is_admin:
+            conv = await self.db.get(Conversation, conversation_id)
+        else:
+            conv = await ConversationRepository(self.db).get_by_id(conversation_id, user_id)
+        if not conv:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+            )
+
+    async def add_conversation(
+        self, doc_id: str, user_id: str, conversation_id: str, is_admin: bool = False
     ) -> DocumentResponse:
-        """Gắn/gỡ tài liệu khỏi một hội thoại. conversation_id=None → đưa về kho tổng."""
+        """Gắn thêm 1 hội thoại vào tài liệu, giữ nguyên các liên kết đã có."""
+        await self._get_owned_or_404(doc_id, user_id, is_admin)
+        await self._check_conversation_owned(conversation_id, user_id, is_admin)
+
+        await self.repo.add_conversation_link(doc_id, conversation_id)
+        doc = await self.repo.get_by_id(doc_id)
+        assert doc is not None
+        return DocumentResponse.model_validate(doc)
+
+    async def set_conversations(
+        self, doc_id: str, user_id: str, conversation_ids: list[str], is_admin: bool = False
+    ) -> DocumentResponse:
+        """Thay toàn bộ hội thoại gắn với tài liệu. [] → gỡ hết, đưa về kho tổng."""
         await self._get_owned_or_404(doc_id, user_id, is_admin)
 
-        if conversation_id is not None:
-            # Non-admin: chỉ gắn vào hội thoại của chính mình. Admin: chỉ cần hội thoại tồn tại.
-            if is_admin:
-                conv = await self.db.get(Conversation, conversation_id)
-            else:
-                conv = await ConversationRepository(self.db).get_by_id(conversation_id, user_id)
-            if not conv:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
-                )
+        for conversation_id in dict.fromkeys(conversation_ids):
+            await self._check_conversation_owned(conversation_id, user_id, is_admin)
 
-        doc = await self.repo.set_conversation(doc_id, conversation_id)
+        await self.repo.set_conversations(doc_id, conversation_ids)
+        doc = await self.repo.get_by_id(doc_id)
         assert doc is not None
         return DocumentResponse.model_validate(doc)
