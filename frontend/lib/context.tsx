@@ -54,8 +54,11 @@ export interface ChatSession {
 export interface CustomModel {
   id: string;
   name: string;
+  // Mã model thật gửi lên provider (vd: "gpt-4o", "gemini-1.5-flash", "llama-3.1-70b-versatile").
+  modelId: string;
   apiKey: string;
-  provider?: string;
+  // Endpoint OpenAI-compatible. Rỗng/undefined → dùng endpoint OpenAI mặc định.
+  baseUrl?: string;
 }
 
 export interface AuditLog {
@@ -82,13 +85,26 @@ export interface RagSettings {
   systemPrompt: string;
 }
 
+// Nhãn hiển thị (tiếng Việt, panel Cấu hình) -> giá trị enum backend chấp nhận
+// (ChatRequest.search_mode, xem schemas/chat.py). "advanced" bị backend gate theo
+// plan trả phí (core/plan_gate.py) — 3 giá trị còn lại chưa ảnh hưởng hành vi retrieval.
+const SEARCH_MODE_TO_BACKEND: Record<string, "hybrid" | "vector" | "keyword" | "advanced"> = {
+  "Lai (Hybrid)": "hybrid",
+  "Vector": "vector",
+  "Từ khóa": "keyword",
+  "Nâng cao": "advanced",
+}
+
+// Sentinel cho "dùng model mặc định của hệ thống" (không phải model tùy chỉnh của người dùng).
+export const SYSTEM_DEFAULT_MODEL = "system-default";
+
 interface AppContextType {
   documents: Document[];
   setDocuments: React.Dispatch<React.SetStateAction<Document[]>>;
   // Bật/tắt tài liệu (is_active). Chỉ doc active mới hiện ở panel hội thoại + được RAG dùng.
   toggleDocActive: (docId: string) => Promise<void>;
-  // Gắn/gỡ tài liệu khỏi một hội thoại (dùng ở trang document-library).
-  assignDocConversation: (docId: string, conversationId: string | null) => Promise<void>;
+  // Thay toàn bộ hội thoại gắn với tài liệu (dùng ở trang document-library, hỗ trợ nhiều hội thoại).
+  setDocConversations: (docId: string, conversationIds: string[]) => Promise<void>;
   chatSessions: ChatSession[];
   setChatSessions: React.Dispatch<React.SetStateAction<ChatSession[]>>;
   activeSessionId: string;
@@ -211,7 +227,7 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
 
   const [ragSettings, setRagSettings] = useState<RagSettings>({
     searchMode: "Lai (Hybrid)",
-    model: "Gemini 1.5 Flash",
+    model: SYSTEM_DEFAULT_MODEL,
     topK: 8,
     similarityThreshold: 0.25,
     systemPrompt: "Bạn là trợ lý pháp lý AI chuyên nghiệp của doanh nghiệp. Hãy dùng các tài liệu được cung cấp dưới đây để trả lời câu hỏi một cách trung thực và chính xác. Trích dẫn rõ ràng Điều, Khoản và Tên tài liệu khi trả lời. Nếu không tìm thấy thông tin trong tài liệu, hãy báo cho người dùng biết."
@@ -419,6 +435,25 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
   // quản lý qua localStorage theo session nữa.
 
   // ============================================================
+  // Custom models (BYOM): lưu cục bộ trên trình duyệt (localStorage), KHÔNG gửi lên
+  // server ngoài lúc gọi /chat/stream — server không lưu trữ API key của người dùng.
+  // ============================================================
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const stored = localStorage.getItem("custom_models")
+      if (stored) setCustomModels(JSON.parse(stored))
+    } catch (err) {
+      console.error("Failed to restore custom models:", err)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    localStorage.setItem("custom_models", JSON.stringify(customModels))
+  }, [customModels])
+
+  // ============================================================
   // Auth Operations
   // ============================================================
   const login = async (email: string, password: string) => {
@@ -581,8 +616,12 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
 
       // RAG chỉ dùng tài liệu ĐÃ gắn vào hội thoại này VÀ đang active (đã index xong).
       const convDocIds = documents
-        .filter(d => d.status === "indexed" && d.is_active && d.conversation_id === currentSession.id)
+        .filter(d => d.status === "indexed" && d.is_active && d.conversations.some(c => c.id === currentSession.id))
         .map(d => d.id)
+
+      // Model tùy chỉnh (BYOM): chỉ áp dụng khi người dùng đã chọn 1 model trong danh sách
+      // "Model của bạn" (có apiKey riêng). Chọn "Mặc định hệ thống" → không override gì cả.
+      const selectedCustomModel = customModels.find(m => m.name === ragSettings.model)
 
       await chatAPI.sendMessageStream(messageText, conversationId, searchTool, convDocIds, {
         // Nhận id hội thoại thật sớm → migrate session "new-..." + gắn tài liệu đã upload
@@ -627,7 +666,15 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
           patchAssistant({ content: `Lỗi từ server: ${detail}`, isStreaming: false })
           setIsLlmGenerating(false)
         },
-      }, ragSettings.topK, ragSettings.similarityThreshold)
+      }, {
+        topK: ragSettings.topK,
+        similarityThreshold: ragSettings.similarityThreshold,
+        systemPrompt: ragSettings.systemPrompt,
+        model: selectedCustomModel?.modelId,
+        apiKey: selectedCustomModel?.apiKey,
+        baseUrl: selectedCustomModel?.baseUrl,
+        searchMode: SEARCH_MODE_TO_BACKEND[ragSettings.searchMode] ?? "hybrid",
+      })
     } catch (err) {
       console.error("Failed to send message:", err)
       const errorContent = err instanceof ApiError

@@ -310,8 +310,19 @@ export const chatAPI = {
     search_tool: boolean | null | undefined,
     document_ids: string[] | null | undefined,
     cb: StreamCallbacks,
-    top_k?: number | null,
-    similarity_threshold?: number | null
+    options?: {
+      topK?: number | null;
+      similarityThreshold?: number | null;
+      systemPrompt?: string | null;
+      // Model tùy chỉnh (BYOM) — chỉ áp dụng khi apiKey có giá trị, xem panel Cấu hình.
+      // apiKey đi thẳng lên backend theo từng request, KHÔNG lưu ở server.
+      model?: string | null;
+      apiKey?: string | null;
+      baseUrl?: string | null;
+      // Chế độ tra cứu chọn ở panel Cấu hình. "advanced" bị backend gate theo plan
+      // (403 nếu free) — xem core/plan_gate.py. Không gửi -> hành vi mặc định hiện tại.
+      searchMode?: "hybrid" | "vector" | "keyword" | "advanced" | null;
+    }
   ): Promise<void> {
     const res = await apiFetch("/api/v1/chat/stream", {
       method: "POST",
@@ -321,13 +332,29 @@ export const chatAPI = {
         conversation_id: conversation_id || null,
         search_tool: search_tool !== undefined ? search_tool : null,
         documentIds: document_ids || null,
-        topK: top_k ?? null,
-        similarityThreshold: similarity_threshold ?? null,
+        topK: options?.topK ?? null,
+        similarityThreshold: options?.similarityThreshold ?? null,
+        // rỗng/undefined → backend tự dùng SYSTEM_PROMPT mặc định.
+        systemPrompt:
+          options?.systemPrompt && options.systemPrompt.trim().length > 0
+            ? options.systemPrompt
+            : null,
+        model: options?.apiKey ? options?.model || null : null,
+        apiKey: options?.apiKey || null,
+        baseUrl: options?.apiKey ? options?.baseUrl || null : null,
+        searchMode: options?.searchMode ?? null,
       }),
     });
 
     if (!res.ok || !res.body) {
-      cb.onError?.(`HTTP ${res.status}`);
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        detail = body.detail || detail;
+      } catch {
+        // response không phải JSON (vd lỗi mạng) — giữ message mặc định
+      }
+      cb.onError?.(detail);
       return;
     }
 

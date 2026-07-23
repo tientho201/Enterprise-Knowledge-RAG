@@ -37,7 +37,7 @@ import {
   CirclePlus
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { useApp, CustomModel } from "@/lib/context"
+import { useApp, CustomModel, SYSTEM_DEFAULT_MODEL } from "@/lib/context"
 import { type Citation, type Document } from "@/lib/api"
 
 // Các bước "suy nghĩ" hiển thị trong lúc chờ backend trả lời (giống thinking của
@@ -123,15 +123,16 @@ export default function Page() {
   const [showSearchToggle, setShowSearchToggle] = useState<boolean>(false)
   const [searchToolEnabled, setSearchToolEnabled] = useState<boolean>(false)
   const [newModelName, setNewModelName] = useState<string>("")
+  const [newModelId, setNewModelId] = useState<string>("")
   const [newModelApiKey, setNewModelApiKey] = useState<string>("")
+  const [newModelBaseUrl, setNewModelBaseUrl] = useState<string>("")
   const [showAddModel, setShowAddModel] = useState<boolean>(false)
   const [visibleApiKeys, setVisibleApiKeys] = useState<Set<string>>(new Set())
 
+  // Model do quản trị hệ thống cấu hình sẵn ở backend (xem LLM_PROVIDER/.env) — không
+  // có danh sách provider cụ thể ở đây vì lựa chọn thật sự nằm ở "Model tùy chỉnh" bên dưới.
   const defaultModels = [
-    { value: "Gemini 1.5 Pro", label: "Gemini 1.5 Pro (Deep Reasoning)" },
-    { value: "Gemini 1.5 Flash", label: "Gemini 1.5 Flash (Tốc độ cao)" },
-    { value: "GPT-4o Enterprise", label: "GPT-4o Enterprise (OpenAI)" },
-    { value: "Llama 3.1 70B", label: "Llama 3.1 70B (Mã nguồn mở)" },
+    { value: SYSTEM_DEFAULT_MODEL, label: "Mặc định hệ thống" },
   ]
 
   // Refs
@@ -848,13 +849,23 @@ export default function Page() {
                 {showAddModel && (
                   <div className="space-y-2 p-3 bg-white/[0.02] border border-white/[0.05] rounded-xl animate-msg-in">
                     <div className="space-y-1">
-                      <label className="text-[10px] text-neutral-500">Tên model</label>
+                      <label className="text-[10px] text-neutral-500">Tên hiển thị</label>
                       <input
                         type="text"
                         value={newModelName}
                         onChange={(e) => setNewModelName(e.target.value)}
-                        placeholder="vd: Claude 3.5 Sonnet..."
+                        placeholder="vd: Gemini của tôi..."
                         className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-2 text-neutral-200 focus:outline-none focus:border-emerald-500/20 text-[12px] placeholder:text-neutral-600"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-neutral-500">Mã model (Model ID)</label>
+                      <input
+                        type="text"
+                        value={newModelId}
+                        onChange={(e) => setNewModelId(e.target.value)}
+                        placeholder="vd: gpt-4o, gemini-1.5-flash, llama-3.1-70b-versatile..."
+                        className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-2 text-neutral-200 focus:outline-none focus:border-emerald-500/20 text-[12px] font-mono placeholder:text-neutral-600"
                       />
                     </div>
                     <div className="space-y-1">
@@ -879,26 +890,43 @@ export default function Page() {
                         </button>
                       </div>
                     </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-neutral-500">Base URL (tuỳ chọn)</label>
+                      <input
+                        type="text"
+                        value={newModelBaseUrl}
+                        onChange={(e) => setNewModelBaseUrl(e.target.value)}
+                        placeholder="Để trống = endpoint OpenAI mặc định"
+                        className="w-full bg-white/[0.03] border border-white/[0.06] rounded-lg px-2.5 py-2 text-neutral-200 focus:outline-none focus:border-emerald-500/20 text-[12px] font-mono placeholder:text-neutral-600"
+                      />
+                      <p className="text-[9px] text-neutral-600 leading-relaxed">
+                        Dùng cho endpoint OpenAI-compatible: Gemini, Groq, OpenRouter, vLLM tự host...
+                      </p>
+                    </div>
                     <button
                       onClick={() => {
-                        if (!newModelName.trim() || !newModelApiKey.trim()) return;
+                        if (!newModelName.trim() || !newModelId.trim() || !newModelApiKey.trim()) return;
                         const newModel: CustomModel = {
                           id: `model-${Date.now()}`,
                           name: newModelName.trim(),
+                          modelId: newModelId.trim(),
                           apiKey: newModelApiKey.trim(),
+                          baseUrl: newModelBaseUrl.trim() || undefined,
                         };
                         setCustomModels(prev => [...prev, newModel]);
                         setRagSettings({ ...ragSettings, model: newModel.name });
                         setNewModelName('');
+                        setNewModelId('');
                         setNewModelApiKey('');
+                        setNewModelBaseUrl('');
                         setShowAddModel(false);
                         const next = new Set(visibleApiKeys);
                         next.delete('new');
                         setVisibleApiKeys(next);
                       }}
-                      disabled={!newModelName.trim() || !newModelApiKey.trim()}
+                      disabled={!newModelName.trim() || !newModelId.trim() || !newModelApiKey.trim()}
                       className={`w-full py-2 rounded-lg text-[12px] font-medium transition-all ${
-                        newModelName.trim() && newModelApiKey.trim()
+                        newModelName.trim() && newModelId.trim() && newModelApiKey.trim()
                           ? 'bg-emerald-500/80 text-white hover:bg-emerald-500 active:scale-[0.98]'
                           : 'bg-white/[0.03] text-neutral-600 cursor-not-allowed'
                       }`}
@@ -944,6 +972,10 @@ export default function Page() {
                               <Trash2 className="w-3 h-3" />
                             </button>
                           </div>
+
+                          <p className="text-[9px] font-mono text-neutral-600 truncate mb-1.5">
+                            {model.modelId}{model.baseUrl ? ` · ${model.baseUrl}` : ""}
+                          </p>
 
                           {/* API Key display */}
                           <div className="flex items-center gap-1.5">
