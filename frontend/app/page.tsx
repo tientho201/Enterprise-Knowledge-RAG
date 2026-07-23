@@ -144,7 +144,7 @@ export default function Page() {
 
   // Tài liệu thuộc hội thoại đang mở. Panel hiện TẤT CẢ (cả active lẫn inactive) để người
   // dùng thấy đã upload gì vào kho của đoạn chat này; tick = active (dùng cho truy vấn).
-  const conversationDocs = documents.filter(d => d.conversation_id === activeSessionId)
+  const conversationDocs = documents.filter(d => d.conversations.some(c => c.id === activeSessionId))
   const activeIndexedCount = conversationDocs.filter(d => d.status === "indexed" && d.is_active).length
   const indexedCount = conversationDocs.filter(d => d.status === "indexed").length
 

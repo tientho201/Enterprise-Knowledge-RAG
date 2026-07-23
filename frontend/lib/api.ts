@@ -204,6 +204,11 @@ export interface ConversationDetail {
   messages: ChatMessage[];
 }
 
+export interface ConversationRef {
+  id: string;
+  title: string | null;
+}
+
 export interface Document {
   id: string;
   name: string;
@@ -213,8 +218,7 @@ export interface Document {
   source: string | null;
   file_size: number | null;
   is_active: boolean;
-  conversation_id: string | null;
-  conversation_title: string | null;
+  conversations: ConversationRef[];
   created_at: string;
   updated_at: string;
 }
@@ -451,14 +455,22 @@ export const documentsAPI = {
     return handleResponse<Document>(res);
   },
 
-  async assignConversation(
-    docId: string,
-    conversationId: string | null
-  ): Promise<Document> {
-    const res = await apiFetch(`/api/v1/documents/${docId}/conversation`, {
-      method: "PATCH",
+  // Gắn thêm 1 hội thoại vào tài liệu, giữ nguyên các liên kết đã có.
+  async addConversation(docId: string, conversationId: string): Promise<Document> {
+    const res = await apiFetch(`/api/v1/documents/${docId}/conversations`, {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversation_id: conversationId }),
+    });
+    return handleResponse<Document>(res);
+  },
+
+  // Thay toàn bộ hội thoại gắn với tài liệu. [] → gỡ hết, đưa về kho tổng.
+  async setConversations(docId: string, conversationIds: string[]): Promise<Document> {
+    const res = await apiFetch(`/api/v1/documents/${docId}/conversations`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_ids: conversationIds }),
     });
     return handleResponse<Document>(res);
   },

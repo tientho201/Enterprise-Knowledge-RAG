@@ -575,13 +575,17 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
             const oldId = currentSession.id
             // Gắn các tài liệu đã upload trong session mới (chưa lưu) sang hội thoại thật (backend)
             documents
-              .filter(d => d.conversation_id === oldId)
+              .filter(d => d.conversations.some(c => c.id === oldId))
               .forEach(d => {
-                documentsAPI.assignConversation(d.id, convId).catch(err =>
+                documentsAPI.addConversation(d.id, convId).catch(err =>
                   console.error("Failed to assign document to conversation:", err)
                 )
               })
-            setDocuments(prev => prev.map(d => d.conversation_id === oldId ? { ...d, conversation_id: convId } : d))
+            setDocuments(prev => prev.map(d =>
+              d.conversations.some(c => c.id === oldId)
+                ? { ...d, conversations: d.conversations.map(c => c.id === oldId ? { id: convId, title: null } : c) }
+                : d
+            ))
             setChatSessions(prev => prev.map(s => s.id === oldId ? { ...s, id: convId } : s))
             setActiveSessionId(convId)
           }
@@ -645,8 +649,11 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       // Step 1: Upload
       setUploadProgress(prev => prev ? { ...prev, progress: 30, stepText: 'Đang tải file lên server...' } : null)
       const uploaded = await documentsAPI.upload(file, backendConvId)
-      // Giữ liên kết local với session hiện tại (kể cả session mới chưa lưu)
-      const doc = { ...uploaded, conversation_id: uploaded.conversation_id ?? localConvId }
+      // Giữ liên kết local với session hiện tại (kể cả session mới chưa lưu, backend chưa có link)
+      const conversations = uploaded.conversations.length > 0
+        ? uploaded.conversations
+        : (localConvId ? [{ id: localConvId, title: null }] : [])
+      const doc = { ...uploaded, conversations }
 
       // Step 2: Document is uploaded, backend processes it
       setUploadProgress(prev => prev ? { ...prev, progress: 60, stepText: 'Đã tải lên — đang chờ backend xử lý...' } : null)
@@ -664,8 +671,12 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
           attempts++
           try {
             const updated = await documentsAPI.getById(doc.id)
-            // Giữ conversation_id local (backend có thể vẫn null nếu hội thoại chưa lưu)
-            setDocuments(prev => prev.map(d => d.id === doc.id ? { ...updated, conversation_id: d.conversation_id ?? updated.conversation_id } : d))
+            // Giữ liên kết local (backend có thể vẫn rỗng nếu hội thoại chưa lưu)
+            setDocuments(prev => prev.map(d =>
+              d.id === doc.id
+                ? { ...updated, conversations: updated.conversations.length > 0 ? updated.conversations : d.conversations }
+                : d
+            ))
 
             if (updated.status === "indexed") {
               clearInterval(pollInterval)
@@ -742,18 +753,26 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     }
   }
 
-  const assignDocConversation = async (docId: string, conversationId: string | null) => {
+  // Thay toàn bộ hội thoại gắn với tài liệu (multi-select ở trang document-library).
+  const setDocConversations = async (docId: string, conversationIds: string[]) => {
     const doc = documents.find(d => d.id === docId)
     if (!doc) return
-    const prevConvId = doc.conversation_id
-    setDocuments(prev => prev.map(d => d.id === docId ? { ...d, conversation_id: conversationId } : d))
+    const prevConversations = doc.conversations
+    // Optimistic: chưa biết title mới (nếu vừa thêm hội thoại) — giữ title cũ nếu có, tra cứu từ chatSessions
+    const optimistic = conversationIds.map(id => {
+      const existing = prevConversations.find(c => c.id === id)
+      if (existing) return existing
+      const session = chatSessions.find(s => s.id === id)
+      return { id, title: session?.title ?? null }
+    })
+    setDocuments(prev => prev.map(d => d.id === docId ? { ...d, conversations: optimistic } : d))
     try {
-      const updated = await documentsAPI.assignConversation(docId, conversationId)
-      setDocuments(prev => prev.map(d => d.id === docId ? { ...updated, conversation_title: null } : d))
+      const updated = await documentsAPI.setConversations(docId, conversationIds)
+      setDocuments(prev => prev.map(d => d.id === docId ? updated : d))
       addAuditLog(`Cập nhật hội thoại cho tài liệu: ${doc.name}`, "config")
     } catch (err) {
-      console.error("Failed to assign conversation:", err)
-      setDocuments(prev => prev.map(d => d.id === docId ? { ...d, conversation_id: prevConvId } : d))
+      console.error("Failed to set document conversations:", err)
+      setDocuments(prev => prev.map(d => d.id === docId ? { ...d, conversations: prevConversations } : d))
     }
   }
 
@@ -825,7 +844,7 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       documents,
       setDocuments,
       toggleDocActive,
-      assignDocConversation,
+      setDocConversations,
       chatSessions,
       setChatSessions,
       activeSessionId,

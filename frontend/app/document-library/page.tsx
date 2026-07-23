@@ -13,15 +13,25 @@ import {
   HardDrive,
   Layers,
   Info,
-  ChevronRight,
   BookOpen,
   X,
   PanelLeftOpen,
   RefreshCw,
-  MessageSquare
+  MessageSquare,
+  ChevronDown
 } from "lucide-react"
 import { useApp } from "@/lib/context"
 import { Button } from "@/components/ui/button"
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog"
 import { type Document } from "@/lib/api"
 
 export default function DocumentLibrary() {
@@ -32,7 +42,7 @@ export default function DocumentLibrary() {
     deleteDocument,
     reindexDocument,
     toggleDocActive,
-    assignDocConversation,
+    setDocConversations,
     chatSessions,
     showLeftSidebar,
     setShowLeftSidebar,
@@ -48,6 +58,11 @@ export default function DocumentLibrary() {
   const [searchQuery, setSearchQuery] = useState("")
   const [filterType, setFilterType] = useState<"all" | "pdf" | "docx" | "txt">("all")
   const [selectedDocForDetail, setSelectedDocForDetail] = useState<Document | null>(null)
+  // Tài liệu đang trong quá trình xóa — blur card + khóa thao tác ngay khi bấm xóa,
+  // thay vì đợi request DELETE (soft-delete + audit log) hoàn tất mới phản hồi UI.
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set())
+  // Tài liệu đang chờ xác nhận xóa (hộp thoại Hủy / Xác nhận)
+  const [docPendingDelete, setDocPendingDelete] = useState<{ id: string; name: string } | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -87,12 +102,37 @@ export default function DocumentLibrary() {
     toggleDocActive(docId)
   }
 
-  const handleDeleteDoc = async (docId: string, docName: string) => {
-    if (!confirm(`Xóa tài liệu "${docName}"? Hành động này không thể hoàn tác.`)) return
+  // Bật/tắt gắn tài liệu vào 1 hội thoại (checklist multi-select)
+  const handleToggleDocConversation = (doc: Document, conversationId: string) => {
+    const current = doc.conversations.map(c => c.id)
+    const next = current.includes(conversationId)
+      ? current.filter(id => id !== conversationId)
+      : [...current, conversationId]
+    setDocConversations(doc.id, next)
+  }
+
+  // Mở hộp thoại xác nhận (Hủy / Xác nhận) trước khi xóa
+  const handleDeleteDoc = (docId: string, docName: string) => {
+    setDocPendingDelete({ id: docId, name: docName })
+  }
+
+  // Người dùng bấm "Xác nhận" trong hộp thoại
+  const confirmDeleteDoc = async () => {
+    if (!docPendingDelete) return
+    const { id: docId } = docPendingDelete
+    setDocPendingDelete(null)
+    // Blur + khóa card ngay lập tức để người dùng thấy phản hồi tức thì, không đợi request xong
+    setDeletingIds(prev => new Set(prev).add(docId))
     try {
       await deleteDocument(docId)
+      // Thành công: doc đã bị lọc khỏi `documents` trong context → card tự unmount, không cần dọn deletingIds
     } catch {
       alert("Không thể xóa tài liệu. Vui lòng thử lại.")
+      setDeletingIds(prev => {
+        const next = new Set(prev)
+        next.delete(docId)
+        return next
+      })
     }
   }
 
@@ -238,14 +278,15 @@ export default function DocumentLibrary() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {filteredDocs.map((doc) => {
                   const isChecked = doc.is_active;
+                  const isDeleting = deletingIds.has(doc.id);
                   return (
                     <div
                       key={doc.id}
-                      className={`glass-card p-4 rounded-xl border transition-all flex flex-col justify-between gap-4 group ${
+                      className={`glass-card p-4 rounded-xl border transition-all duration-300 flex flex-col justify-between gap-4 group ${
                         isChecked
                           ? "border-emerald-500/10 hover:border-emerald-500/20"
                           : "border-white/[0.04] hover:border-white/[0.08]"
-                      }`}
+                      } ${isDeleting ? "opacity-40 blur-[1.5px] grayscale pointer-events-none select-none" : ""}`}
                     >
                       <div className="space-y-2.5">
                         <div className="flex items-start justify-between gap-3">
@@ -286,31 +327,65 @@ export default function DocumentLibrary() {
                           {doc.source || `${doc.type.toUpperCase()} document`}
                         </p>
 
-                        {/* Hội thoại đã gắn — bấm để nhảy tới */}
-                        {doc.conversation_id && (
-                          <button
-                            onClick={() => handleJumpToConversation(doc.conversation_id!)}
-                            title="Mở hội thoại đã gắn tài liệu này"
-                            className="flex items-center gap-1.5 text-[10px] text-sky-400/70 hover:text-sky-300 transition-colors max-w-full cursor-pointer"
-                          >
-                            <MessageSquare className="w-3 h-3 shrink-0" />
-                            <span className="truncate">{doc.conversation_title || "Hội thoại"}</span>
-                            <ChevronRight className="w-3 h-3 shrink-0" />
-                          </button>
+                        {/* Hội thoại đã gắn — chip, bấm để nhảy tới, nút X để gỡ. 1 tài liệu có thể gắn nhiều hội thoại. */}
+                        {doc.conversations.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {doc.conversations.map(c => (
+                              <div
+                                key={c.id}
+                                className="flex items-center gap-1 text-[10px] bg-sky-500/5 hover:bg-sky-500/10 border border-sky-500/10 rounded pl-1.5 pr-1 py-0.5 transition-colors max-w-full"
+                              >
+                                <button
+                                  onClick={() => handleJumpToConversation(c.id)}
+                                  title="Mở hội thoại đã gắn tài liệu này"
+                                  className="flex items-center gap-1 min-w-0 text-sky-400/70 hover:text-sky-300 cursor-pointer"
+                                >
+                                  <MessageSquare className="w-2.5 h-2.5 shrink-0" />
+                                  <span className="truncate max-w-[100px]">{c.title || "Hội thoại"}</span>
+                                </button>
+                                <button
+                                  onClick={() => handleToggleDocConversation(doc, c.id)}
+                                  title="Gỡ tài liệu khỏi hội thoại này"
+                                  className="shrink-0 p-0.5 rounded text-neutral-600 hover:text-red-400 hover:bg-white/[0.06] cursor-pointer"
+                                >
+                                  <X className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
                         )}
 
-                        {/* Chọn/đổi hội thoại cho tài liệu */}
-                        <select
-                          value={doc.conversation_id || ""}
-                          onChange={(e) => assignDocConversation(doc.id, e.target.value || null)}
-                          className="w-full bg-[#0f0f0f]/60 border border-white/[0.06] rounded-lg px-2 py-1 text-[10px] text-neutral-400 focus:outline-none focus:border-sky-500/20 cursor-pointer"
-                          title="Gắn tài liệu vào một hội thoại"
-                        >
-                          <option value="">Kho tổng (chưa gắn hội thoại)</option>
-                          {savedConversations.map(s => (
-                            <option key={s.id} value={s.id}>{s.title || "Hội thoại"}</option>
-                          ))}
-                        </select>
+                        {/* Gắn tài liệu vào (thêm) hội thoại — dropdown thay vì list mở sẵn, tránh bị che khi nhiều hội thoại */}
+                        {savedConversations.length > 0 && (
+                          <details className="group/conv relative">
+                            <summary
+                              className="flex items-center justify-between gap-2 list-none cursor-pointer bg-[#0f0f0f]/60 border border-white/[0.06] rounded-lg px-2 py-1.5 text-[10px] text-neutral-400 hover:border-sky-500/20 hover:text-neutral-300 transition-colors [&::-webkit-details-marker]:hidden"
+                              title="Gắn tài liệu vào một hoặc nhiều hội thoại"
+                            >
+                              <span>Gắn vào hội thoại…</span>
+                              <ChevronDown className="w-3 h-3 shrink-0 text-neutral-500 transition-transform group-open/conv:rotate-180" />
+                            </summary>
+                            <div className="absolute z-20 mt-1 w-full border border-white/[0.08] rounded-lg bg-[#131313] shadow-xl max-h-40 overflow-y-auto scrollbar-thin">
+                              {savedConversations.map(s => {
+                                const checked = doc.conversations.some(c => c.id === s.id)
+                                return (
+                                  <label
+                                    key={s.id}
+                                    className="flex items-center gap-2 px-2 py-1.5 text-[10px] text-neutral-400 hover:bg-white/[0.04] cursor-pointer"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => handleToggleDocConversation(doc, s.id)}
+                                      className="accent-sky-500 cursor-pointer"
+                                    />
+                                    <span className="truncate">{s.title || "Hội thoại"}</span>
+                                  </label>
+                                )
+                              })}
+                            </div>
+                          </details>
+                        )}
                       </div>
 
                       {/* Footer Info */}
@@ -324,16 +399,18 @@ export default function DocumentLibrary() {
                           {doc.status === 'failed' && (
                             <button
                               onClick={() => reindexDocument(doc.id)}
-                              className="text-[11px] text-amber-400/70 hover:text-amber-400 transition-colors font-sans flex items-center gap-1 cursor-pointer"
+                              disabled={isDeleting}
+                              className="text-[11px] text-amber-400/70 hover:text-amber-400 transition-colors font-sans flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed"
                             >
                               <RefreshCw className="w-3 h-3" />
                               <span>Reindex</span>
                             </button>
                           )}
-                          
+
                           <button
                             onClick={() => handleDeleteDoc(doc.id, doc.name)}
-                            className="p-1 rounded text-neutral-600 hover:text-red-400 hover:bg-white/[0.04] transition-all cursor-pointer"
+                            disabled={isDeleting}
+                            className="p-1 rounded text-neutral-600 hover:text-red-400 hover:bg-white/[0.04] transition-all cursor-pointer disabled:cursor-not-allowed disabled:hover:text-neutral-600 disabled:hover:bg-transparent"
                             title="Xóa tài liệu"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -415,6 +492,24 @@ export default function DocumentLibrary() {
         </div>
       </div>
 
+      {/* Hộp thoại xác nhận xóa tài liệu — Hủy / Xác nhận */}
+      <AlertDialog
+        open={docPendingDelete !== null}
+        onOpenChange={(open) => !open && setDocPendingDelete(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Xóa tài liệu?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Bạn có chắc muốn xóa tài liệu &quot;{docPendingDelete?.name}&quot;? Hành động này không thể hoàn tác.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Hủy</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDeleteDoc}>Xác nhận</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
