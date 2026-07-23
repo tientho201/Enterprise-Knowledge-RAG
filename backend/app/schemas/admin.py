@@ -3,6 +3,12 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.models.user import UserRole
+
+
+class UpdateUserRoleRequest(BaseModel):
+    role: UserRole
+
 
 class DashboardStats(BaseModel):
     total_users: int
