@@ -210,6 +210,87 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                         "Neo4j indexing skipped for document %s: %s", document_id, graph_exc
                     )
 
+                # 10b. Provision layer (citation graph — Phase 1: viện dẫn nội bộ,
+                # chưa placeholder/viện dẫn ngoại). Best-effort RIÊNG với bước 10:
+                # lỗi ở đây không được kéo sập Chunk-graph đã chạy ổn ở trên.
+                try:
+                    from app.ingestion.graph_indexer import (
+                        ProvisionRecord,
+                        index_provisions_to_graph,
+                    )
+                    from app.ingestion.structural_parser import (
+                        extract_citations,
+                        extract_document_code,
+                        parse_provisions,
+                    )
+                    from app.rag.graph_client import get_neo4j_driver
+
+                    provisions = parse_provisions(text)
+                    if provisions:
+                        document_code = extract_document_code(text) or f"internal:{document_id}"
+                        citation_records = extract_citations(text, provisions)
+
+                        provision_records = [
+                            ProvisionRecord(
+                                dieu=p.key.dieu,
+                                khoan=p.key.khoan,
+                                diem=p.key.diem,
+                                content=p.content,
+                            )
+                            for p in provisions
+                        ]
+
+                        # Map Provision <-> Chunk theo giao vùng ký tự [char_start, char_end).
+                        chunk_links: list[tuple[tuple[int, int | None, str | None], str]] = []
+                        for p in provisions:
+                            for chunk in chunks:
+                                if chunk.char_start is None:
+                                    continue
+                                c_start = chunk.char_start
+                                c_end = c_start + len(chunk.content)
+                                if c_start < p.char_end and c_end > p.char_start:
+                                    chunk_links.append(
+                                        (
+                                            (p.key.dieu, p.key.khoan, p.key.diem),
+                                            _make_chunk_id(document_id, chunk.chunk_index),
+                                        )
+                                    )
+
+                        citation_pairs = [
+                            (
+                                (c.source.dieu, c.source.khoan, c.source.diem),
+                                (c.target.dieu, c.target.khoan, c.target.diem),
+                            )
+                            for c in citation_records
+                        ]
+
+                        index_provisions_to_graph(
+                            driver=get_neo4j_driver(),
+                            owner_id=doc.owner_id,
+                            document_code=document_code,
+                            provisions=provision_records,
+                            chunk_links=chunk_links,
+                            citations=citation_pairs,
+                        )
+                        logger.debug(
+                            "Neo4j indexed %d provisions, %d chunk-links, %d citations "
+                            "for document %s (document_code=%s)",
+                            len(provision_records),
+                            len(chunk_links),
+                            len(citation_pairs),
+                            document_id,
+                            document_code,
+                        )
+                    else:
+                        logger.debug(
+                            "No Provisions parsed for document %s (non-legal or no Điều found)",
+                            document_id,
+                        )
+                except Exception as prov_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Provision indexing skipped for document %s: %s", document_id, prov_exc
+                    )
+
                 # 11. Update document status in Supabase
                 await doc_repo.update_status(document_id, DocumentStatus.indexed)
                 await db.commit()

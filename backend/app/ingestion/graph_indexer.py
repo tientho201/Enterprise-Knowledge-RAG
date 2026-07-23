@@ -176,3 +176,156 @@ def delete_document_from_graph(driver: Driver, document_id: str) -> None:
             document_id=document_id,
         )
     logger.info("Neo4j nodes deleted for document=%s", document_id)
+
+
+# ── Provision layer (citation graph — Phase 1: viện dẫn nội bộ) ─────────────
+#
+# Node
+#   (:Provision {legal_address, owner_id, document_code, dieu, khoan, diem,
+#                content, is_placeholder})
+#
+# Relationships
+#   (:Provision)-[:HAS_CHUNK]->(:Chunk)     — Provision trải/chứa 1 phần nội
+#                                              dung của Chunk đó (map theo giao
+#                                              vùng ký tự, xem ingestion.py)
+#   (:Provision)-[:VIEN_DAN]->(:Provision)  — viện dẫn pháp lý
+#
+# legal_address là khóa MERGE tất định:
+#   owner_{owner_id}:{document_code}:DIEU_{n}[:KHOAN_{m}[:DIEM_{x}]]
+# Không dùng document_id nội bộ để định danh — placeholder (phase 2) được tạo
+# TRƯỚC KHI văn bản đích được upload, lúc đó chưa có document_id.
+
+
+@dataclass
+class ProvisionRecord:
+    dieu: int
+    khoan: int | None
+    diem: str | None
+    content: str
+
+
+def build_legal_address(
+    owner_id: str | None,
+    document_code: str,
+    dieu: int,
+    khoan: int | None = None,
+    diem: str | None = None,
+) -> str:
+    """
+    Địa chỉ pháp lý tất định — cùng (owner_id, document_code, dieu, khoan, diem)
+    luôn ra cùng chuỗi, qua mọi lần ingest/reindex (giống chunk_id ở ingestion.py).
+
+    TODO (kho tài liệu chung — chưa build, chỉ ghi chỗ đặt): khi có kho văn bản quy
+    phạm pháp luật công khai (do admin kiểm duyệt), namespace "owner_{owner_id}"
+    sẽ cần thêm 1 nhánh "public:{document_code}:DIEU_{n}..." song song (không thay
+    owner_id bằng None — None đã có nghĩa khác, "admin/không filter", ở nơi khác
+    trong codebase). Chỗ sửa khi làm: hàm này thêm tham số is_public; nơi gọi
+    (index_provisions_to_graph, ingestion.py) truyền is_public dựa trên nguồn tài
+    liệu; retriever traverse filter theo (owner_id = $owner OR is_public = true).
+    """
+    parts = [f"owner_{owner_id}", document_code, f"DIEU_{dieu}"]
+    if khoan is not None:
+        parts.append(f"KHOAN_{khoan}")
+        if diem is not None:
+            parts.append(f"DIEM_{diem}")
+    return ":".join(parts)
+
+
+def index_provisions_to_graph(
+    driver: Driver,
+    owner_id: str | None,
+    document_code: str,
+    provisions: list[ProvisionRecord],
+    chunk_links: list[tuple[tuple[int, int | None, str | None], str]],
+    citations: list[tuple[tuple[int, int | None, str | None], tuple[int, int | None, str | None]]],
+) -> None:
+    """
+    Upsert Provision nodes + HAS_CHUNK + VIEN_DAN edges cho 1 văn bản.
+
+    Idempotent — toàn bộ dùng MERGE theo legal_address, an toàn gọi lại khi
+    retry/reindex (không nhân đôi node/edge).
+
+    chunk_links: [((dieu, khoan, diem), chunk_id), ...] — cạnh Provision -> Chunk.
+    citations:   [((dieu, khoan, diem)_nguồn, (dieu, khoan, diem)_đích), ...].
+
+    Phase 1 CHƯA tạo placeholder: nếu tầng gọi (ingestion.py) truyền vào 1 citation
+    có đích không nằm trong *provisions* của chính văn bản này, đó là lỗi gọi sai
+    (structural_parser.extract_citations đã tự lọc trước) — hàm này giả định mọi
+    (dieu, khoan, diem) xuất hiện trong chunk_links/citations đều có mặt trong
+    *provisions*.
+
+    TODO (phase sau): thêm backing record Postgres cho audit/hiển thị, map 1-1
+    theo legal_address — legal_address được thiết kế làm khóa sạch ngay từ đầu
+    để việc này không cần refactor gì ở đây.
+    """
+    if not provisions:
+        return
+
+    def addr(key: tuple[int, int | None, str | None]) -> str:
+        dieu, khoan, diem = key
+        return build_legal_address(owner_id, document_code, dieu, khoan, diem)
+
+    provision_params = [
+        {
+            "legal_address": build_legal_address(owner_id, document_code, p.dieu, p.khoan, p.diem),
+            "owner_id": owner_id,
+            "document_code": document_code,
+            "dieu": p.dieu,
+            "khoan": p.khoan,
+            "diem": p.diem,
+            "content": p.content,
+        }
+        for p in provisions
+    ]
+
+    with driver.session() as session:
+        session.run(
+            """
+            UNWIND $provisions AS pr
+            MERGE (p:Provision {legal_address: pr.legal_address})
+            SET  p.owner_id       = pr.owner_id,
+                 p.document_code  = pr.document_code,
+                 p.dieu           = pr.dieu,
+                 p.khoan          = pr.khoan,
+                 p.diem           = pr.diem,
+                 p.content        = pr.content,
+                 p.is_placeholder = false
+            """,
+            provisions=provision_params,
+        )
+
+    if chunk_links:
+        link_params = [
+            {"legal_address": addr(key), "chunk_id": chunk_id} for key, chunk_id in chunk_links
+        ]
+        with driver.session() as session:
+            session.run(
+                """
+                UNWIND $links AS l
+                MATCH (p:Provision {legal_address: l.legal_address})
+                MATCH (c:Chunk {chunk_id: l.chunk_id})
+                MERGE (p)-[:HAS_CHUNK]->(c)
+                """,
+                links=link_params,
+            )
+
+    if citations:
+        cite_params = [{"from_addr": addr(src), "to_addr": addr(dst)} for src, dst in citations]
+        with driver.session() as session:
+            session.run(
+                """
+                UNWIND $cites AS ci
+                MATCH (a:Provision {legal_address: ci.from_addr})
+                MATCH (b:Provision {legal_address: ci.to_addr})
+                MERGE (a)-[:VIEN_DAN]->(b)
+                """,
+                cites=cite_params,
+            )
+
+    logger.info(
+        "Neo4j Provision indexed: document_code=%s provisions=%d chunk_links=%d citations=%d",
+        document_code,
+        len(provisions),
+        len(chunk_links),
+        len(citations),
+    )

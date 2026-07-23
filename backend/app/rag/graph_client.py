@@ -37,4 +37,10 @@ def ensure_graph_schema(driver: Driver) -> None:
             "FOR (c:Chunk) REQUIRE c.chunk_id IS UNIQUE"
         )
         session.run("CREATE INDEX chunk_document_id IF NOT EXISTS FOR (c:Chunk) ON (c.document_id)")
+        # Citation graph (Provision layer) — legal_address là khóa MERGE tất định
+        # (owner_id:document_code:DIEU_n[:KHOAN_m[:DIEM_x]]), xem ingestion/graph_indexer.py.
+        session.run(
+            "CREATE CONSTRAINT provision_address_unique IF NOT EXISTS "
+            "FOR (p:Provision) REQUIRE p.legal_address IS UNIQUE"
+        )
     logger.info("Neo4j graph schema verified.")

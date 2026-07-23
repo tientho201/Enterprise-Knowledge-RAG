@@ -11,6 +11,12 @@ class TextChunk:
     chunk_index: int
     token_count: int | None = None
     metadata: dict | None = None
+    # Vị trí ký tự bắt đầu của chunk trong text gốc (trước khi chunk). Dùng để map
+    # Chunk <-> Provision (citation graph) theo giao vùng ký tự. Lấy từ
+    # RecursiveCharacterTextSplitter(add_start_index=True) — thư viện tự tính bằng
+    # text.find() có neo vị trí gần đúng, không phải tự dò lại nên không bị lệch
+    # khi overlap tạo chuỗi trùng lặp gần nhau.
+    char_start: int | None = None
 
 
 class DocumentChunker:
@@ -31,19 +37,24 @@ class DocumentChunker:
             chunk_overlap=self.chunk_overlap,
             length_function=len,
             separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""],
+            add_start_index=True,
         )
 
     def chunk(self, text: str, metadata: dict | None = None) -> list[TextChunk]:
-        raw_chunks = self._splitter.split_text(text)
+        # create_documents() gọi split_text() y hệt bên trong (xem langchain_text_splitters
+        # source) rồi bọc thêm start_index — nội dung/số lượng chunk không đổi so với
+        # gọi split_text() trực tiếp như trước.
+        docs = self._splitter.create_documents([text])
         return [
             TextChunk(
-                content=chunk,
+                content=doc.page_content,
                 chunk_index=i,
-                token_count=self._estimate_tokens(chunk),
+                token_count=self._estimate_tokens(doc.page_content),
                 metadata=metadata,
+                char_start=doc.metadata.get("start_index"),
             )
-            for i, chunk in enumerate(raw_chunks)
-            if chunk.strip()
+            for i, doc in enumerate(docs)
+            if doc.page_content.strip()
         ]
 
     @staticmethod
