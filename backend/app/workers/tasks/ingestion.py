@@ -12,10 +12,25 @@ All tasks are idempotent and retry-safe.
 
 import asyncio
 import logging
+import uuid
 
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+# Cố định — KHÔNG đổi giá trị này, đổi sẽ khiến mọi chunk_id hiện có (Postgres/
+# Qdrant/Neo4j) bị tính lại thành giá trị khác, mất khả năng MERGE/dedupe với dữ
+# liệu đã ingest trước đó.
+_CHUNK_ID_NAMESPACE = uuid.UUID("c9f9b8f0-6b1e-4b2a-9c7d-1a2b3c4d5e6f")
+
+
+def _make_chunk_id(document_id: str, chunk_index: int) -> str:
+    """
+    Chunk id tất định từ (document_id, chunk_index) — không đổi qua các lần chạy/
+    retry/reindex, để Qdrant upsert, Neo4j MERGE và Postgres primary key đều hội
+    tụ về cùng một identity thay vì sinh bản ghi trùng.
+    """
+    return str(uuid.uuid5(_CHUNK_ID_NAMESPACE, f"{document_id}:{chunk_index}"))
 
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
@@ -39,14 +54,13 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
     """
     logger.info("Starting ingestion: document_id=%s s3=%s", document_id, storage_path)
     try:
-        import uuid
-
         from qdrant_client.models import (
             Distance,
             PayloadSchemaType,
             PointStruct,
             VectorParams,
         )
+        from sqlalchemy import delete as sa_delete
 
         from app.core.config import settings
         from app.db.session import AsyncSessionLocal
@@ -122,7 +136,7 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                 chunk_records: list[Chunk] = []
 
                 for chunk, embedding in zip(chunks, embeddings):
-                    chunk_id = str(uuid.uuid4())
+                    chunk_id = _make_chunk_id(document_id, chunk.chunk_index)
                     points.append(
                         PointStruct(
                             id=chunk_id,
@@ -160,7 +174,12 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                         wait=True,
                     )
 
-                # 9. Save chunk metadata to Supabase/PostgreSQL
+                # 9. Save chunk metadata to Supabase/PostgreSQL.
+                # chunk_id giờ tất định (bước 7) nên trùng với chunk_id của lần
+                # ingest trước (retry hoặc reindex) — xoá row cũ theo document_id
+                # trước khi insert để tránh đụng primary key. Idempotent: nếu
+                # chưa có row nào (lần ingest đầu tiên) thì đây là no-op.
+                await db.execute(sa_delete(Chunk).where(Chunk.document_id == document_id))
                 db.add_all(chunk_records)
 
                 # 10. Index graph edges to Neo4j (best-effort — failure does not abort ingestion)
