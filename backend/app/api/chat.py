@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
 from app.core.dependencies import CurrentUserDep, CurrentUserIdDep, DbDep
+from app.core.plan_gate import require_advanced_search_access
 from app.core.rate_limit import rate_limiter
 from app.models.user import UserRole
 from app.schemas.chat import (
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
     response_model=ChatResponse,
     dependencies=[
         Depends(rate_limiter(settings.CHAT_RATE_LIMIT_PER_MINUTE, 60, "chat")),
+        Depends(require_advanced_search_access),
     ],
 )
 async def chat(body: ChatRequest, user: CurrentUserDep, db: DbDep):
@@ -51,6 +53,7 @@ async def chat(body: ChatRequest, user: CurrentUserDep, db: DbDep):
     "/stream",
     dependencies=[
         Depends(rate_limiter(settings.CHAT_RATE_LIMIT_PER_MINUTE, 60, "chat")),
+        Depends(require_advanced_search_access),
     ],
 )
 async def chat_stream(body: ChatRequest, user: CurrentUserDep, db: DbDep):

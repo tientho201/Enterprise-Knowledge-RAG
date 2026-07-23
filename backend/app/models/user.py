@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import enum
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Enum, String
+from sqlalchemy import Boolean, DateTime, Enum, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDMixin
@@ -19,6 +20,17 @@ class UserRole(enum.StrEnum):
     viewer = "viewer"
 
 
+class UserPlan(enum.StrEnum):
+    """Gói trả phí — cổng tính năng (vd Chế độ tra cứu "Nâng cao"), TÁCH BIỆT với
+    UserRole (phân quyền duyệt/quản trị). 2 trục độc lập: 1 user có thể vừa admin
+    vừa plan=free (role không tự nâng plan), hoặc viewer + pro.
+    Admin luôn được coi như đủ quyền "Nâng cao" bất kể plan — xem
+    core/plan_gate.py::can_use_advanced_search, không cần set plan=pro cho admin."""
+
+    free = "free"
+    pro = "pro"
+
+
 class User(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "users"
 
@@ -27,6 +39,11 @@ class User(Base, UUIDMixin, TimestampMixin):
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, default=UserRole.viewer)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    plan: Mapped[UserPlan] = mapped_column(Enum(UserPlan), nullable=False, default=UserPlan.free)
+    # None = không áp dụng hạn (vd đang free, hoặc pro vô thời hạn). Có giá trị + đã qua
+    # -> coi như hết hạn dù plan vẫn ghi "pro" (chưa có job tự hạ cấp — việc đó thuộc
+    # phase nối payment gateway thật sau này, xem can_use_advanced_search).
+    plan_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     conversations: Mapped[list[Conversation]] = relationship(
         "Conversation", back_populates="user", cascade="all, delete-orphan"

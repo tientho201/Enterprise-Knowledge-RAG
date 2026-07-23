@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,12 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     search_tool: bool | None = Field(default=False, alias="searchTool")
     document_ids: list[str] | None = Field(default=None, alias="documentIds")
+    # Chế độ tra cứu chọn ở panel Cấu hình. None -> hành vi mặc định hiện tại (hybrid,
+    # không đổi gì). "advanced" là chế độ duy nhất có gate (xem core/plan_gate.py) —
+    # tạm thời chạy y hệt hybrid, graph traversal thật chưa build (phase sau).
+    search_mode: Literal["hybrid", "vector", "keyword", "advanced"] | None = Field(
+        default=None, alias="searchMode"
+    )
     # Tuning từ panel Cấu hình. None → dùng default trong config.py.
     # top_k: số chunk cuối đưa vào generator (override RERANK_TOP_K).
     # similarity_threshold: điểm cosine tối thiểu cho dense search (Qdrant score_threshold).

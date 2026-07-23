@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.user import User, UserRole
+from app.models.user import User, UserPlan, UserRole
 
 
 class UserRepository:
@@ -38,6 +38,16 @@ class UserRepository:
         user = await self.get_by_id(user_id)
         if user:
             user.role = role
+            await self.db.flush()
+        return user
+
+    async def update_plan(self, user_id: str, plan: UserPlan) -> User | None:
+        """Self-service demo upgrade/downgrade — không có cổng thanh toán thật.
+        plan_expires_at không set ở đây (vô thời hạn); nối payment gateway thật
+        sau này sẽ set hạn theo chu kỳ thanh toán."""
+        user = await self.get_by_id(user_id)
+        if user:
+            user.plan = plan
             await self.db.flush()
         return user
 

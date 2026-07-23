@@ -11,6 +11,7 @@ from app.schemas.auth import (
     RefreshTokenRequest,
     RegisterRequest,
     TokenResponse,
+    UpdatePlanRequest,
     UserResponse,
 )
 from app.services.auth_service import AuthService
@@ -41,6 +42,14 @@ async def refresh(body: RefreshTokenRequest, db: DbDep):
 async def me(user_id: CurrentUserIdDep, db: DbDep):
     service = AuthService(db)
     return await service.get_current_user(user_id)
+
+
+@router.post("/plan", response_model=UserResponse)
+async def update_plan(body: UpdatePlanRequest, user_id: CurrentUserIdDep, db: DbDep):
+    """Self-service demo nâng cấp/hạ cấp gói — KHÔNG thu tiền thật (chưa nối payment
+    gateway). User chỉ đổi được plan của chính mình."""
+    service = AuthService(db)
+    return await service.update_plan(user_id, body.plan)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
