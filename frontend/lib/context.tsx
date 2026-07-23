@@ -35,8 +35,12 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  role: "user" | "admin";
+  role: "admin" | "editor" | "viewer";
   avatarUrl?: string;
+  plan: "free" | "pro";
+  // Từ backend (core/plan_gate.py::can_use_advanced_search) — nguồn sự thật duy nhất
+  // để khoá/mở nút "Nâng cao". Backend vẫn chặn 403 nếu gọi thẳng API dù field này sai.
+  canUseAdvancedSearch: boolean;
 }
 
 export interface ChatSession {
@@ -129,6 +133,7 @@ interface AppContextType {
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   register: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
+  refreshUser: () => Promise<void>;
   refreshDocuments: () => Promise<void>;
   refreshChatHistory: () => Promise<void>;
   refreshAuditLogs: () => Promise<void>;
@@ -170,6 +175,8 @@ function mapAuthUser(u: AuthUser): User {
     email: u.email,
     role: u.role,
     avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(u.full_name || u.email)}`,
+    plan: u.plan,
+    canUseAdvancedSearch: u.can_use_advanced_search,
   }
 }
 
@@ -363,6 +370,8 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
         email: "admin@enterprise.com",
         role: "admin",
         avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=Admin`,
+        plan: "free",
+        canUseAdvancedSearch: true, // mock user là admin — bypass gate bất kể plan
       })
       setIsAuthLoading(false)
       return
@@ -461,6 +470,13 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     clearTokens()
     setChatSessions([createEmptySession()])
     setDocuments([])
+  }
+
+  // Nạp lại profile từ /auth/me — dùng sau khi role/plan đổi (Cài đặt, Nâng cấp) để
+  // UI (nút "Nâng cao", nhãn plan...) phản ánh đúng ngay, không cần đăng nhập lại.
+  const refreshUser = async () => {
+    const authUser = await authAPI.me()
+    setUser(mapAuthUser(authUser))
   }
 
   // ============================================================
@@ -882,6 +898,7 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       login,
       register,
       logout,
+      refreshUser,
       refreshDocuments,
       refreshChatHistory,
       refreshAuditLogs,

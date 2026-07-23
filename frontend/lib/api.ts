@@ -156,8 +156,15 @@ export interface AuthUser {
   id: string;
   email: string;
   full_name: string | null;
-  role: "user" | "admin";
+  // Khớp UserRole ở backend (models/user.py) — trước đây sai thành "user"|"admin"
+  // (giá trị "user" backend không bao giờ trả), sửa lại cho đúng khi thêm quản lý
+  // role cho admin.
+  role: "admin" | "editor" | "viewer";
   is_active: boolean;
+  plan: "free" | "pro";
+  // Computed ở backend (role=admin luôn true, bất kể plan) — dùng field này để
+  // khoá/mở nút "Nâng cao", KHÔNG tự suy luận role/plan ở client.
+  can_use_advanced_search: boolean;
 }
 
 export interface LoginResponse {
@@ -268,6 +275,17 @@ export const authAPI = {
 
   async me(): Promise<AuthUser> {
     const res = await apiFetch("/api/v1/auth/me");
+    return handleResponse<AuthUser>(res);
+  },
+
+  // Self-service demo — KHÔNG có cổng thanh toán thật đứng sau (chưa nối Stripe...).
+  // Đổi plan của chính user đang đăng nhập.
+  async updatePlan(plan: "free" | "pro"): Promise<AuthUser> {
+    const res = await apiFetch("/api/v1/auth/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan }),
+    });
     return handleResponse<AuthUser>(res);
   },
 };
@@ -489,6 +507,20 @@ export const adminAPI = {
   async jobs(): Promise<{ active: any; reserved: any }> {
     const res = await apiFetch("/api/v1/admin/jobs");
     return handleResponse<{ active: any; reserved: any }>(res);
+  },
+
+  async listUsers(): Promise<AuthUser[]> {
+    const res = await apiFetch("/api/v1/admin/users");
+    return handleResponse<AuthUser[]>(res);
+  },
+
+  async updateUserRole(userId: string, role: "admin" | "editor" | "viewer"): Promise<AuthUser> {
+    const res = await apiFetch(`/api/v1/admin/users/${userId}/role`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role }),
+    });
+    return handleResponse<AuthUser>(res);
   },
 };
 

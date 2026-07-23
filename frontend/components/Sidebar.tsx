@@ -1,21 +1,33 @@
 "use client"
 
-import React from "react"
+import React, { useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { 
-  Plus, 
-  Trash2, 
-  MessageSquare, 
-  PanelLeftClose, 
-  Database, 
+import {
+  Plus,
+  Trash2,
+  MessageSquare,
+  PanelLeftClose,
+  Database,
   Zap,
   FileText,
   BookOpen,
   History,
-  LogOut
+  LogOut,
+  MoreHorizontal,
+  Settings,
+  Sparkles
 } from "lucide-react"
 import { useApp } from "@/lib/context"
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu"
+import SettingsModal from "@/components/SettingsModal"
+import UpgradeModal from "@/components/UpgradeModal"
 
 export default function Sidebar() {
   const pathname = usePathname()
@@ -32,6 +44,9 @@ export default function Sidebar() {
     user,
     logout
   } = useApp()
+
+  const [showSettings, setShowSettings] = useState(false)
+  const [showUpgrade, setShowUpgrade] = useState(false)
 
   if (!showLeftSidebar) return null
 
@@ -179,16 +194,37 @@ export default function Sidebar() {
             </div>
           </div>
 
-          {/* Logout Button */}
-          <button
-            onClick={() => logout()}
-            className="p-1.5 rounded-lg hover:bg-white/[0.06] text-neutral-500 hover:text-red-400 transition-colors shrink-0 cursor-pointer"
-            title="Đăng xuất"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-          </button>
+          {/* Menu tài khoản */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="p-1.5 rounded-lg hover:bg-white/[0.06] text-neutral-500 hover:text-neutral-200 transition-colors shrink-0 cursor-pointer outline-none"
+                title="Tài khoản"
+              >
+                <MoreHorizontal className="w-3.5 h-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top">
+              <DropdownMenuItem onClick={() => setShowSettings(true)}>
+                <Settings className="w-3.5 h-3.5" />
+                Cài đặt
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setShowUpgrade(true)}>
+                <Sparkles className="w-3.5 h-3.5" />
+                Nâng cấp
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onClick={() => logout()}>
+                <LogOut className="w-3.5 h-3.5" />
+                Đăng xuất
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       )}
+
+      <SettingsModal open={showSettings} onOpenChange={setShowSettings} />
+      <UpgradeModal open={showUpgrade} onOpenChange={setShowUpgrade} />
 
       {/* Status Footer */}
       <div className="p-4 border-t border-white/[0.04] space-y-2">

@@ -88,6 +88,7 @@ function ThinkingIndicator() {
 
 export default function Page() {
   const {
+    user,
     documents,
     toggleDocActive,
     activeSession,
@@ -971,19 +972,39 @@ export default function Page() {
               {/* ===== SEARCH MODE ===== */}
               <div className="space-y-1.5 border-t border-white/[0.04] pt-4">
                 <label className="font-medium text-neutral-400 text-[11px] uppercase tracking-wider">Chế độ tra cứu</label>
-                <div className="grid grid-cols-3 gap-1">
-                  {["Lai (Hybrid)", "Vector", "Từ khóa"].map((mode) => {
+                <div className="grid grid-cols-2 gap-1">
+                  {[
+                    { mode: "Lai (Hybrid)", locked: false },
+                    { mode: "Vector", locked: false },
+                    { mode: "Từ khóa", locked: false },
+                    // Nâng cao = tra cứu qua graph Neo4j hệ thống (citation graph), giới hạn
+                    // gói trả phí. Nguồn sự thật là user.canUseAdvancedSearch (từ backend,
+                    // core/plan_gate.py) — backend vẫn chặn 403 nếu gọi thẳng API dù UI sai.
+                    { mode: "Nâng cao", locked: !user?.canUseAdvancedSearch },
+                  ].map(({ mode, locked }) => {
                     const isSel = ragSettings.searchMode === mode;
                     return (
                       <button
                         key={mode}
-                        onClick={() => setRagSettings({ ...ragSettings, searchMode: mode })}
-                        className={`py-2 rounded-lg text-[11px] font-medium border transition-all ${
-                          isSel
+                        onClick={() => {
+                          if (locked) {
+                            // TODO: chưa có trang nâng cấp/thanh toán — tạm thông báo, chờ
+                            // sản phẩm quyết định route thật (vd /upgrade).
+                            window.alert("Chế độ tra cứu Nâng cao yêu cầu gói trả phí (Pro).");
+                            return;
+                          }
+                          setRagSettings({ ...ragSettings, searchMode: mode });
+                        }}
+                        title={locked ? "Yêu cầu gói trả phí" : undefined}
+                        className={`py-2 rounded-lg text-[11px] font-medium border transition-all flex items-center justify-center gap-1 ${
+                          locked
+                            ? "bg-white/[0.01] border-white/[0.03] text-neutral-700 cursor-not-allowed"
+                            : isSel
                             ? "bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-300"
                             : "bg-white/[0.02] border-white/[0.04] text-neutral-500 hover:text-neutral-300"
                         }`}
                       >
+                        {locked && <Lock className="w-2.5 h-2.5 shrink-0" />}
                         {mode}
                       </button>
                     )
