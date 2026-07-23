@@ -2,10 +2,12 @@
 // API Client — Centralized HTTP layer for Backend communication
 // ============================================================
 
-// Dùng 127.0.0.1 (không phải "localhost"): trên Windows, trình duyệt phân giải
-// "localhost" thành IPv6 ::1 trong khi uvicorn chỉ bind IPv4 127.0.0.1 → "Failed
-// to fetch". Ép IPv4 để khớp. Origin (localhost:3000) không đổi nên CORS vẫn OK.
-const BASE_URL = "http://127.0.0.1:8000"; // Directly calls backend API
+// URL backend API. Local dev: fallback 127.0.0.1 (không dùng "localhost" — trên
+// Windows trình duyệt phân giải "localhost" thành IPv6 ::1 trong khi uvicorn chỉ
+// bind IPv4 127.0.0.1 → "Failed to fetch"). Production: set NEXT_PUBLIC_API_URL
+// trong Vercel (Settings → Environment Variables) trỏ đúng URL Render.
+// PHẢI có prefix NEXT_PUBLIC_ để Next.js inline giá trị vào bundle client lúc build.
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 // ============================================================
 // MOCK MODE — Set to true to bypass backend (dev/demo only)
