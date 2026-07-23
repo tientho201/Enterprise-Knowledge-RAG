@@ -1,15 +1,24 @@
 from collections.abc import AsyncIterator
+from typing import cast
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 from app.core.config import settings
 from app.llm.base import BaseLLM
 
 
 class OpenAILLM(BaseLLM):
-    def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        self.model = settings.OPENAI_MODEL
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+    ):
+        # Override tham số cho phép BYOM passthrough (xem llm/factory.py::get_llm_for_request)
+        # dùng key/endpoint/model riêng của người dùng thay vì cấu hình server mặc định.
+        self.client = AsyncOpenAI(api_key=api_key or settings.OPENAI_API_KEY, base_url=base_url)
+        self.model = model or settings.OPENAI_MODEL
         self.max_tokens = settings.OPENAI_MAX_TOKENS
         self.temperature = settings.OPENAI_TEMPERATURE
 
@@ -21,7 +30,7 @@ class OpenAILLM(BaseLLM):
     ) -> str:
         response = await self.client.chat.completions.create(
             model=self.model,
-            messages=messages,
+            messages=cast(list[ChatCompletionMessageParam], messages),
             temperature=temperature or self.temperature,
             max_tokens=max_tokens or self.max_tokens,
         )
@@ -35,7 +44,7 @@ class OpenAILLM(BaseLLM):
     ) -> AsyncIterator[str]:
         stream = await self.client.chat.completions.create(
             model=self.model,
-            messages=messages,
+            messages=cast(list[ChatCompletionMessageParam], messages),
             temperature=temperature or self.temperature,
             max_tokens=max_tokens or self.max_tokens,
             stream=True,

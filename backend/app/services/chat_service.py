@@ -1,6 +1,7 @@
 import json
 from collections.abc import AsyncIterator
 
+import openai
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,20 @@ from app.schemas.chat import (
     ConversationResponse,
     MessageResponse,
 )
+
+
+def _friendly_llm_error(exc: Exception, model: str | None, api_key: str | None) -> str:
+    """Diễn giải lỗi gọi LLM dễ hiểu hơn. BYOM (có api_key riêng) hay gặp: sai Model ID,
+    API Key, hoặc Base URL không phải endpoint OpenAI-compatible (vd Anthropic Claude)."""
+    if api_key and isinstance(exc, openai.APIError):
+        hint = f" (model: {model})" if model else ""
+        return (
+            f"Không thể gọi model tùy chỉnh{hint}. Vui lòng kiểm tra lại Model ID, API Key "
+            f"và Base URL trong panel Cấu hình — lưu ý Base URL phải là endpoint "
+            f"OpenAI-compatible (OpenAI, Gemini, Groq, OpenRouter, vLLM tự host...). "
+            f"Chi tiết lỗi: {exc}"
+        )
+    return str(exc)
 
 
 class ChatService:
@@ -31,6 +46,10 @@ class ChatService:
         is_admin: bool = False,
         top_k: int | None = None,
         similarity_threshold: float | None = None,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ) -> ChatResponse:
         # Get or create conversation
         if conversation_id:
@@ -69,8 +88,18 @@ class ChatService:
             "owner_id": owner_id,
             "top_k": top_k,
             "similarity_threshold": similarity_threshold,
+            "system_prompt": system_prompt,
+            "model": model,
+            "api_key": api_key,
+            "base_url": base_url,
         }
-        final_state = await graph.ainvoke(initial_state)
+        try:
+            final_state = await graph.ainvoke(initial_state)
+        except openai.APIError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_friendly_llm_error(exc, model, api_key),
+            ) from exc
         answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."
         citations = final_state.get("citations", [])
 
@@ -156,6 +185,10 @@ class ChatService:
         is_admin: bool = False,
         top_k: int | None = None,
         similarity_threshold: float | None = None,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ) -> AsyncIterator[str]:
         """Streaming SSE: chạy retrieval rồi stream câu trả lời token-by-token.
 
@@ -201,11 +234,15 @@ class ChatService:
                 "owner_id": owner_id,
                 "top_k": top_k,
                 "similarity_threshold": similarity_threshold,
+                "system_prompt": system_prompt,
+                "model": model,
+                "api_key": api_key,
+                "base_url": base_url,
             }
             state = await get_retrieval_graph().ainvoke(initial_state)
 
             from app.agents.generator import SYSTEM_PROMPT, _build_context
-            from app.llm.factory import get_llm
+            from app.llm.factory import get_llm_for_request
 
             intent = state.get("intent", "rag")
             context, citations = _build_context(state)
@@ -213,11 +250,12 @@ class ChatService:
             if intent == "rag" and context:
                 # Happy path: stream câu trả lời RAG token-by-token
                 messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
                     {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {message}"},
                 ]
+                llm = get_llm_for_request(model=model, api_key=api_key, base_url=base_url)
                 buffer = ""
-                async for token in get_llm().stream_chat(messages=messages, temperature=0.1):
+                async for token in llm.stream_chat(messages=messages, temperature=0.1):
                     buffer += token
                     yield sse({"type": "delta", "text": token})
                 answer = buffer.strip() or "Không tìm thấy trong tài liệu."
@@ -253,7 +291,7 @@ class ChatService:
 
             logging.getLogger(__name__).exception("chat_stream failed")
             await self.db.rollback()
-            yield sse({"type": "error", "detail": str(exc)})
+            yield sse({"type": "error", "detail": _friendly_llm_error(exc, model, api_key)})
 
     async def get_history(self, user_id: str) -> list[ConversationResponse]:
         convs = await self.repo.list_by_user(user_id)

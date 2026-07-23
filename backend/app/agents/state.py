@@ -23,3 +23,9 @@ class AgentState(TypedDict):
     # similarity_threshold = điểm cosine tối thiểu cho dense search.
     top_k: int | None
     similarity_threshold: float | None
+    # System prompt tùy chỉnh từ panel Cấu hình. None/rỗng → dùng SYSTEM_PROMPT mặc định (generator.py).
+    system_prompt: str | None
+    # BYOM passthrough (xem llm/factory.py::get_llm_for_request). api_key None → luôn get_llm().
+    model: str | None
+    api_key: str | None
+    base_url: str | None

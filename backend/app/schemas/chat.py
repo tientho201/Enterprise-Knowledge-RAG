@@ -31,6 +31,14 @@ class ChatRequest(BaseModel):
     similarity_threshold: float | None = Field(
         default=None, alias="similarityThreshold", ge=0.0, le=1.0
     )
+    # None/rỗng → dùng SYSTEM_PROMPT mặc định trong agents/generator.py.
+    system_prompt: str | None = Field(default=None, alias="systemPrompt", max_length=4000)
+    # BYOM (bring-your-own-model) từ panel Cấu hình — OpenAI-compatible passthrough.
+    # api_key rỗng/None → bỏ qua model/base_url, luôn dùng get_llm() (model mặc định server).
+    # api_key KHÔNG được lưu ở server, chỉ dùng trong phạm vi request này.
+    model: str | None = Field(default=None, max_length=200)
+    api_key: str | None = Field(default=None, alias="apiKey", max_length=500)
+    base_url: str | None = Field(default=None, alias="baseUrl", max_length=500)
 
     model_config = {"populate_by_name": True, "from_attributes": True}
 

@@ -24,3 +24,22 @@ def get_llm() -> BaseLLM:
     #     return VLLMLLM(base_url=base_url, model=model)
     else:
         raise ValueError(f"Unknown LLM provider: {provider}. Valid: openai, vllm")
+
+
+def get_llm_for_request(
+    model: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> BaseLLM:
+    """
+    BYOM passthrough: nếu request kèm api_key riêng (panel Cấu hình → Model tùy chỉnh),
+    dựng một OpenAI-compatible client tạm thời (không cache, không lưu key ở server) thay
+    vì dùng get_llm() mặc định. base_url cho phép trỏ tới các endpoint OpenAI-compatible
+    khác (Gemini, Groq, OpenRouter, vLLM tự host...). Không có api_key → luôn get_llm().
+    """
+    if not api_key:
+        return get_llm()
+
+    from app.llm.openai_llm import OpenAILLM
+
+    return OpenAILLM(api_key=api_key, base_url=base_url, model=model)

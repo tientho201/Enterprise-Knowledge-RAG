@@ -4,7 +4,8 @@ ONLY answers from retrieved context — never hallucinate.
 """
 
 from app.agents.state import AgentState
-from app.llm.factory import get_llm
+from app.llm.base import BaseLLM
+from app.llm.factory import get_llm_for_request
 from app.services.web_search import perform_web_search
 
 SYSTEM_PROMPT = """You are an enterprise knowledge assistant. Answer ONLY based on the provided context.
@@ -47,6 +48,15 @@ def _build_context(state: AgentState) -> tuple[str, list[dict]]:
     return "\n\n---\n\n".join(context_parts), citations
 
 
+def _get_llm(state: AgentState) -> BaseLLM:
+    """BYOM passthrough: dùng model tùy chỉnh của người dùng nếu có (panel Cấu hình)."""
+    return get_llm_for_request(
+        model=state.get("model"),
+        api_key=state.get("api_key"),
+        base_url=state.get("base_url"),
+    )
+
+
 async def generator_node(state: AgentState) -> AgentState:
     intent = state.get("intent", "rag")
 
@@ -54,7 +64,7 @@ async def generator_node(state: AgentState) -> AgentState:
         return {**state, "final_answer": OUT_OF_SCOPE_RESPONSE, "citations": []}
 
     if intent == "chitchat":
-        llm = get_llm()
+        llm = _get_llm(state)
         answer = await llm.chat(
             messages=[{"role": "user", "content": CHITCHAT_PROMPT.format(query=state["query"])}],
             temperature=0.7,
@@ -68,11 +78,12 @@ async def generator_node(state: AgentState) -> AgentState:
 
     rag_answer: str | None = None
     if has_rag_context:
-        llm = get_llm()
+        llm = _get_llm(state)
         user_message = f"Context:\n{context}\n\nQuestion: {state['query']}"
+        system_prompt = state.get("system_prompt") or SYSTEM_PROMPT
         rag_answer = await llm.chat(
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
             temperature=0.1,
@@ -105,7 +116,7 @@ Rules:
 2. Be concise and professional
 3. Do NOT hallucinate or invent information"""
 
-                llm = get_llm()
+                llm = _get_llm(state)
                 user_message = f"Web Context:\n{web_context}\n\nQuestion: {state['query']}"
                 web_answer = await llm.chat(
                     messages=[

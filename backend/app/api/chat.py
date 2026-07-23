@@ -40,6 +40,10 @@ async def chat(body: ChatRequest, user: CurrentUserDep, db: DbDep):
         is_admin=(user.role == UserRole.admin),
         top_k=body.top_k,
         similarity_threshold=body.similarity_threshold,
+        system_prompt=body.system_prompt,
+        model=body.model,
+        api_key=body.api_key,
+        base_url=body.base_url,
     )
 
 
@@ -61,6 +65,10 @@ async def chat_stream(body: ChatRequest, user: CurrentUserDep, db: DbDep):
         is_admin=(user.role == UserRole.admin),
         top_k=body.top_k,
         similarity_threshold=body.similarity_threshold,
+        system_prompt=body.system_prompt,
+        model=body.model,
+        api_key=body.api_key,
+        base_url=body.base_url,
     )
     return StreamingResponse(
         stream,
