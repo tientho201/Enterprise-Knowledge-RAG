@@ -552,6 +552,42 @@ export const adminAPI = {
 };
 
 // ============================================================
+// Graph Explorer API (Giao diện Nâng cao)
+// ============================================================
+// Tách 2 luồng: overview/expand = CẤU TRÚC (nạp 1 lần, giữ ở client state);
+// highlight = chỉ trả ID node trúng để đổi màu/opacity graph có sẵn (KHÔNG reload).
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  type: "document" | "chunk" | "provision";
+  // Nhóm theo document_id — cùng group = cùng tài liệu.
+  group: string;
+  meta: Record<string, unknown>;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  rel: string;
+}
+
+export interface GraphOverview {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export const graphAPI = {
+  // Endpoint A — cấu trúc cấp tài liệu cho 1 hội thoại. Backend tự lấy document_ids
+  // (owner-scoped) từ conversation_id; client KHÔNG gửi Cypher/tham số nhạy cảm.
+  async overview(conversationId: string): Promise<GraphOverview> {
+    const params = new URLSearchParams({ conversation_id: conversationId });
+    const res = await apiFetch(`/api/v1/graph/overview?${params}`);
+    return handleResponse<GraphOverview>(res);
+  },
+};
+
+// ============================================================
 // Audit Logs API
 // ============================================================
 

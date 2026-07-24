@@ -31,6 +31,22 @@ def can_use_advanced_search(user: User) -> bool:
     return True
 
 
+async def require_advanced_access(user: CurrentUserDep) -> None:
+    """
+    FastAPI dependency body-less — chặn 403 nếu user không đủ quyền dùng tính năng
+    "Nâng cao" (vd endpoint đồ thị GET không có request body để suy `search_mode`).
+
+    Dùng ở tầng route (`dependencies=[Depends(require_advanced_access)]`): free gọi
+    thẳng API vẫn bị chặn, ẩn/khoá nút ở frontend chỉ là lớp UX. Tái dùng
+    `can_use_advanced_search` — nguồn sự thật duy nhất cho gate (admin luôn qua).
+    """
+    if not can_use_advanced_search(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tính năng Nâng cao yêu cầu gói trả phí (Pro).",
+        )
+
+
 async def require_advanced_search_access(body: ChatRequest, user: CurrentUserDep) -> None:
     """
     FastAPI dependency — chặn 403 nếu request chọn search_mode="advanced" mà user

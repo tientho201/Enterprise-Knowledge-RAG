@@ -99,10 +99,19 @@ class Settings(BaseSettings):
     DENSE_WEIGHT: float = 0.7
     GRAPH_WEIGHT: float = 0.3
 
+    # ── Graph explorer (Giao diện Nâng cao) ───────────────────────────────────
+    # Trần cứng số node trả về / 1 lần bung (expand) 1 tài liệu. react-force-graph
+    # mượt tới vài trăm node trên máy tầm trung; 1 Thông tư ~40–50 trang ≈ 125 chunk
+    # nên 300 thoải mái. Bị cắt → trả cờ truncated để client báo "hiển thị 300/N".
+    GRAPH_MAX_NODES: int = 300
+
     # ── Rate limiting (Redis fixed-window, per-user) ──────────────────────────
     # Chặn abuse + kiểm soát cost OpenAI. Fail-open nếu Redis down (không chặn request).
     CHAT_RATE_LIMIT_PER_MINUTE: int = 20
     UPLOAD_RATE_LIMIT_PER_MINUTE: int = 10
+    # Ảnh gửi kèm chat (vision) — tách riêng khỏi UPLOAD_RATE_LIMIT_PER_MINUTE (đó là cho
+    # tài liệu thư viện). Ngưỡng cao hơn vì user có thể paste nhiều screenshot liên tiếp.
+    CHAT_IMAGE_RATE_LIMIT_PER_MINUTE: int = 30
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]

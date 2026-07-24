@@ -93,6 +93,27 @@ class DocumentRepository:
             return True
         return False
 
+    async def list_document_ids_for_conversation(
+        self, conversation_id: str, owner_id: str | None = None
+    ) -> list[str]:
+        """ID các tài liệu (chưa xóa) gắn vào 1 hội thoại — dùng cho graph explorer.
+
+        `owner_id=None` → mọi doc của hội thoại (admin); có giá trị → chỉ doc của
+        user đó (data isolation, mirror `HybridRetriever._graph_search`).
+        """
+        query = (
+            select(Document.id)
+            .join(DocumentConversation, DocumentConversation.document_id == Document.id)
+            .where(
+                DocumentConversation.conversation_id == conversation_id,
+                Document.deleted_at.is_(None),
+            )
+        )
+        if owner_id is not None:
+            query = query.where(Document.owner_id == owner_id)
+        rows = await self.db.execute(query)
+        return list(rows.scalars().all())
+
     async def list_with_conversations(
         self, skip: int = 0, limit: int = 20, owner_id: str | None = None
     ) -> tuple[list[Document], int]:

@@ -8,7 +8,6 @@ import {
   Trash2,
   MessageSquare,
   PanelLeftClose,
-  Database,
   Zap,
   FileText,
   BookOpen,
@@ -54,7 +53,8 @@ export default function Sidebar() {
     { name: "Trợ lý AI", href: "/", icon: MessageSquare },
     { name: "Thư viện tài liệu", href: "/document-library", icon: FileText },
     { name: "Vault Nghiên cứu", href: "/research-vault", icon: BookOpen },
-    { name: "Lịch sử làm việc", href: "/work-history", icon: History }
+    { name: "Lịch sử làm việc", href: "/work-history", icon: History },
+    { name: "Giao diện nâng cao", href: "/advanced-interface", icon: Settings }
   ]
 
   const handleSessionClick = async (sessionId: string) => {
@@ -225,21 +225,6 @@ export default function Sidebar() {
 
       <SettingsModal open={showSettings} onOpenChange={setShowSettings} />
       <UpgradeModal open={showUpgrade} onOpenChange={setShowUpgrade} />
-
-      {/* Status Footer */}
-      <div className="p-4 border-t border-white/[0.04] space-y-2">
-        <div className="flex items-center justify-between text-[11px] text-neutral-500">
-          <span className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-dot" />
-            Vector Database
-          </span>
-          <span className="text-[10px] font-mono text-emerald-400/70">Online</span>
-        </div>
-        <div className="text-[10px] text-neutral-600 flex justify-between items-center">
-          <span>localhost:8000</span>
-          <Database className="w-3 h-3" />
-        </div>
-      </div>
     </aside>
   )
 }

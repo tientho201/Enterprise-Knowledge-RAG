@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from app.api import admin, audit_logs, auth, chat, documents
+from app.api import admin, audit_logs, auth, chat, documents, graph
 from app.core.config import settings
 from app.core.redis_client import get_redis
 from app.db.session import AsyncSessionLocal
@@ -51,6 +51,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router, prefix=settings.API_V1_PREFIX)
     app.include_router(admin.router, prefix=settings.API_V1_PREFIX)
     app.include_router(audit_logs.router, prefix=settings.API_V1_PREFIX)
+    app.include_router(graph.router, prefix=settings.API_V1_PREFIX)
 
     @app.get("/health", tags=["health"])
     async def health_check():

@@ -18,6 +18,14 @@ class ConversationRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_owner_id(self, conv_id: str) -> str | None:
+        """user_id sở hữu hội thoại (None nếu không tồn tại). Query nhẹ — không nạp
+        messages/citations như `get_by_id`. Dùng để verify quyền ở graph explorer."""
+        result = await self.db.execute(
+            select(Conversation.user_id).where(Conversation.id == conv_id)
+        )
+        return result.scalar_one_or_none()
+
     async def create(self, user_id: str, title: str | None = None) -> Conversation:
         conv = Conversation(user_id=user_id, title=title)
         self.db.add(conv)
