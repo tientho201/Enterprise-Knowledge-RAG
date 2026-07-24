@@ -141,7 +141,7 @@ export default function LoginPage() {
               )}
             </button>
 
-            {/* Quick Admin Login Option */}
+            {/* Quick Admin Login Option
             <button
               type="button"
               onClick={handleQuickLogin}
@@ -150,7 +150,7 @@ export default function LoginPage() {
             >
               <Zap className="w-3.5 h-3.5 text-emerald-400" />
               Đăng nhập nhanh (Admin)
-            </button>
+            </button> */}
           </form>
           
           {/* Footer Card */}
