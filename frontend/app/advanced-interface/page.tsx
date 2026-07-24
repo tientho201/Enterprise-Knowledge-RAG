@@ -13,6 +13,7 @@ import {
   FileText,
   Boxes,
   Info,
+  Check,
 } from "lucide-react"
 import { useApp } from "@/lib/context"
 import { graphAPI, ApiError, type GraphOverview } from "@/lib/api"
@@ -80,6 +81,8 @@ export default function AdvancedInterface() {
   // Tài liệu đang bung → thông tin cắt (nếu có). expandingId: đang gọi expand.
   const [expandedDocs, setExpandedDocs] = useState<Map<string, ExpandInfo>>(new Map())
   const [expandingId, setExpandingId] = useState<string | null>(null)
+  // Tài liệu bị ẩn khỏi đồ thị (client-side, KHÔNG refetch) — checkbox chọn nội dung.
+  const [hiddenDocIds, setHiddenDocIds] = useState<Set<string>>(new Set())
 
   const canUse = !!user?.canUseAdvancedSearch
 
@@ -88,6 +91,7 @@ export default function AdvancedInterface() {
     setError(null)
     setSelectedNode(null)
     setExpandedDocs(new Map())
+    setHiddenDocIds(new Set())
     try {
       const data: GraphOverview = await graphAPI.overview(conversationId)
       setGraph({
@@ -188,6 +192,41 @@ export default function AdvancedInterface() {
     [expandedDocs]
   )
 
+  // Danh sách tài liệu (node document) để hiện checkbox chọn nội dung.
+  const docChecklist = useMemo(
+    () => (graph ? graph.nodes.filter((n) => n.type === "document") : []),
+    [graph]
+  )
+
+  // Đồ thị hiển thị = ẩn tài liệu bị bỏ chọn + chunk của chúng + link liên quan. CHỈ
+  // lọc ở client (không gọi lại API) — bật/tắt tức thì, giữ nguyên state đã nạp.
+  const visibleGraph = useMemo<GraphData>(() => {
+    if (!graph) return { nodes: [], links: [] }
+    if (hiddenDocIds.size === 0) return graph
+    const nodes = graph.nodes.filter((n) => !hiddenDocIds.has(n.group))
+    const kept = new Set(nodes.map((n) => n.id))
+    const links = graph.links.filter(
+      (l) => kept.has(linkEndId(l.source)) && kept.has(linkEndId(l.target))
+    )
+    return { nodes, links }
+  }, [graph, hiddenDocIds])
+
+  const toggleDocVisible = useCallback((docId: string) => {
+    setHiddenDocIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(docId)) next.delete(docId)
+      else next.add(docId)
+      return next
+    })
+  }, [])
+
+  const setAllDocsVisible = useCallback(
+    (visible: boolean) => {
+      setHiddenDocIds(visible ? new Set() : new Set(docChecklist.map((d) => d.id)))
+    },
+    [docChecklist]
+  )
+
   // ── Gate UI ───────────────────────────────────────────────────────────────
   if (!canUse) {
     return (
@@ -268,8 +307,8 @@ export default function AdvancedInterface() {
             />
           ) : graph && graph.nodes.length > 0 ? (
             <ForceGraphView
-              nodes={graph.nodes}
-              links={graph.links}
+              nodes={visibleGraph.nodes}
+              links={visibleGraph.links}
               expandedIds={expandedIds}
               selectedId={selectedNode?.id ?? null}
               onNodeClick={handleNodeClick}
@@ -309,6 +348,15 @@ export default function AdvancedInterface() {
             </div>
           )}
 
+          {/* Tất cả tài liệu đang bị ẩn */}
+          {graph && graph.nodes.length > 0 && visibleGraph.nodes.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <p className="text-[12px] text-neutral-500 bg-[#0f0f0f]/80 border border-white/[0.06] rounded-lg px-3 py-2">
+                Tất cả tài liệu đang bị ẩn — tick lại ở bảng điều khiển để hiển thị.
+              </p>
+            </div>
+          )}
+
           {/* Nút mở panel chi tiết khi đang thu */}
           {!showDetail && (
             <button
@@ -321,12 +369,12 @@ export default function AdvancedInterface() {
           )}
         </div>
 
-        {/* ── Panel chi tiết (thu/mở được) ──────────────────────────────── */}
+        {/* ── Panel phải (thu/mở được): bộ lọc tài liệu + chi tiết ──────── */}
         {showDetail && (
           <aside className="w-[300px] border-l border-white/[0.04] bg-[#0a0a0a]/50 flex flex-col shrink-0">
             <div className="p-3 border-b border-white/[0.04] flex items-center justify-between">
               <h3 className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">
-                Chi tiết
+                Bảng điều khiển
               </h3>
               <button
                 onClick={() => setShowDetail(false)}
@@ -336,11 +384,26 @@ export default function AdvancedInterface() {
                 <PanelRightClose className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 scrollbar-thin">
+
+            {/* Bộ chọn tài liệu hiển thị (checkbox) */}
+            {docChecklist.length > 0 && (
+              <DocFilter
+                docs={docChecklist}
+                hiddenDocIds={hiddenDocIds}
+                onToggle={toggleDocVisible}
+                onSetAll={setAllDocsVisible}
+              />
+            )}
+
+            {/* Chi tiết node */}
+            <div className="flex-1 overflow-y-auto p-3 scrollbar-thin border-t border-white/[0.04]">
+              <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-2">
+                Chi tiết
+              </div>
               {selectedNode ? (
                 <NodeDetail node={selectedNode} />
               ) : (
-                <p className="text-[12px] text-neutral-600 leading-relaxed pt-2">
+                <p className="text-[12px] text-neutral-600 leading-relaxed">
                   Bấm vào một node trên đồ thị để xem thông tin của nó tại đây.
                 </p>
               )}
@@ -389,6 +452,69 @@ function EmptyState({ icon, text }: { icon: React.ReactNode; text: string }) {
     <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-center px-6">
       {icon}
       <p className="text-[12px] text-neutral-500 max-w-xs leading-relaxed">{text}</p>
+    </div>
+  )
+}
+
+function DocFilter({
+  docs,
+  hiddenDocIds,
+  onToggle,
+  onSetAll,
+}: {
+  docs: FGNode[]
+  hiddenDocIds: Set<string>
+  onToggle: (id: string) => void
+  onSetAll: (visible: boolean) => void
+}) {
+  const allVisible = hiddenDocIds.size === 0
+  return (
+    <div className="p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-wider">
+          Tài liệu ({docs.length})
+        </div>
+        <button
+          onClick={() => onSetAll(!allVisible)}
+          className="text-[10px] text-emerald-400/70 hover:text-emerald-400 transition-colors"
+        >
+          {allVisible ? "Bỏ chọn tất cả" : "Chọn tất cả"}
+        </button>
+      </div>
+      <div className="space-y-1 max-h-[180px] overflow-y-auto scrollbar-thin pr-1">
+        {docs.map((doc) => {
+          const visible = !hiddenDocIds.has(doc.id)
+          const count =
+            typeof doc.meta?.chunk_count === "number" ? doc.meta.chunk_count : null
+          return (
+            <button
+              key={doc.id}
+              onClick={() => onToggle(doc.id)}
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/[0.03] transition-colors text-left group"
+            >
+              <span
+                className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                  visible
+                    ? "bg-emerald-500/80 border-emerald-500/80"
+                    : "border-white/[0.15] bg-transparent"
+                }`}
+              >
+                {visible && <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />}
+              </span>
+              <span
+                className={`text-[12px] truncate flex-1 ${
+                  visible ? "text-neutral-300" : "text-neutral-600"
+                }`}
+              >
+                {doc.label}
+              </span>
+              {count !== null && (
+                <span className="text-[9px] text-neutral-600 shrink-0">{count}</span>
+              )}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
