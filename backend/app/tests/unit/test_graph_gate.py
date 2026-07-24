@@ -45,9 +45,7 @@ async def isolated_app_client():
     await engine.dispose()
 
 
-async def _create_user(
-    session_factory, *, role: UserRole, plan: UserPlan
-) -> tuple[str, str]:
+async def _create_user(session_factory, *, role: UserRole, plan: UserPlan) -> tuple[str, str]:
     async with session_factory() as db:
         user = User(
             email=f"{role.value}-{plan.value}-{uuid.uuid4().hex}@test.local",
