@@ -66,6 +66,12 @@ jobs:
 
       - name: Validate GitHub workflows (actionlint)
         uses: raven-actions/actionlint@v2
+        with:
+          # Tắt pyflakes: action tự cài qua pipx và hiện đang lỗi trên runner
+          # (pipx yêu cầu uv>=0.9.17, runner chỉ có uv 0.5.31). Workflow của
+          # repo không có script Python nhúng nên không cần check này.
+          # shellcheck vẫn giữ nguyên (đã có sẵn trên runner, không cần cài).
+          pyflakes: false
 
   # ─────────────────────────────────────────────
   # JOB 2: Unit tests + coverage gate (SQLite, không service ngoài)
