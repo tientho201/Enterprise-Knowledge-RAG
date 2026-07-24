@@ -24,4 +24,10 @@ async def router_node(state: AgentState) -> AgentState:
     intent = response.strip().lower()
     if intent not in ("rag", "chitchat", "out_of_scope"):
         intent = "rag"
+    # Router chỉ thấy text query, không biết có ảnh gửi kèm — nếu lỡ phân loại
+    # out_of_scope, ảnh sẽ bị bỏ hoàn toàn (generator trả OUT_OF_SCOPE_RESPONSE, không
+    # gọi LLM). Có ảnh → ép về "rag" tối thiểu, generator_node đã xử lý được cả trường
+    # hợp không có context tài liệu (trả lời thuần từ ảnh) lẫn có context.
+    if intent == "out_of_scope" and state.get("image_data_urls"):
+        intent = "rag"
     return {**state, "intent": intent}

@@ -6,6 +6,24 @@ from pydantic import BaseModel, Field
 from app.models.message import MessageRole
 
 
+class AttachmentUploadResponse(BaseModel):
+    """Kết quả upload 1 ảnh gửi kèm chat — id dùng để tham chiếu trong ChatRequest.image_ids."""
+
+    id: str
+    url: str
+    content_type: str
+
+
+class AttachmentSchema(BaseModel):
+    """Ảnh đính kèm hiển thị lại khi render lịch sử hội thoại."""
+
+    id: str
+    url: str
+    content_type: str
+
+    model_config = {"from_attributes": True}
+
+
 class CitationSchema(BaseModel):
     chunk_id: str
     document_id: str
@@ -25,6 +43,9 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     search_tool: bool | None = Field(default=False, alias="searchTool")
     document_ids: list[str] | None = Field(default=None, alias="documentIds")
+    # Ảnh gửi kèm (vision) — id trả về từ POST /chat/images. Tối đa 3 ảnh/tin nhắn
+    # (chặn phình chi phí/độ trễ vision token). Ngữ cảnh tạm, KHÔNG phải tài liệu thư viện.
+    image_ids: list[str] | None = Field(default=None, alias="imageIds", max_length=3)
     # Chế độ tra cứu chọn ở panel Cấu hình. None -> hành vi mặc định hiện tại (hybrid,
     # không đổi gì). "advanced" là chế độ duy nhất có gate (xem core/plan_gate.py) —
     # tạm thời chạy y hệt hybrid, graph traversal thật chưa build (phase sau).
@@ -56,6 +77,7 @@ class MessageResponse(BaseModel):
     content: str
     created_at: datetime
     citations: list[CitationSchema] = []
+    attachments: list[AttachmentSchema] = []
 
     model_config = {"from_attributes": True}
 

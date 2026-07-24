@@ -1,3 +1,4 @@
+import base64
 import json
 from collections.abc import AsyncIterator
 
@@ -8,20 +9,34 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.graph import get_agent_graph, get_retrieval_graph
 from app.agents.state import AgentState
 from app.models.message import MessageRole
+from app.models.message_attachment import MessageAttachment
 from app.repositories.conversation_repo import ConversationRepository
+from app.repositories.message_attachment_repo import MessageAttachmentRepository
 from app.schemas.chat import (
+    AttachmentSchema,
     ChatResponse,
     ConversationDetailResponse,
     ConversationResponse,
     MessageResponse,
 )
+from app.storage.s3_client import download_file_async, get_presigned_url_async
 
 
-def _friendly_llm_error(exc: Exception, model: str | None, api_key: str | None) -> str:
+def _friendly_llm_error(
+    exc: Exception, model: str | None, api_key: str | None, has_image: bool = False
+) -> str:
     """Diễn giải lỗi gọi LLM dễ hiểu hơn. BYOM (có api_key riêng) hay gặp: sai Model ID,
-    API Key, hoặc Base URL không phải endpoint OpenAI-compatible (vd Anthropic Claude)."""
+    API Key, hoặc Base URL không phải endpoint OpenAI-compatible (vd Anthropic Claude).
+    Khi request có ảnh (vision), model tùy chỉnh cũng có thể không hỗ trợ vision dù
+    Model ID/API Key/Base URL đều đúng — thông báo riêng để không gây nhầm lẫn."""
     if api_key and isinstance(exc, openai.APIError):
         hint = f" (model: {model})" if model else ""
+        if has_image:
+            return (
+                f"Không thể gọi model tùy chỉnh{hint} với ảnh đính kèm. Model này có thể "
+                f"không hỗ trợ vision (đọc ảnh) — thử model khác (vd gpt-4o-mini, gpt-4o) "
+                f"hoặc bỏ ảnh khỏi tin nhắn. Chi tiết lỗi: {exc}"
+            )
         return (
             f"Không thể gọi model tùy chỉnh{hint}. Vui lòng kiểm tra lại Model ID, API Key "
             f"và Base URL trong panel Cấu hình — lưu ý Base URL phải là endpoint "
@@ -35,6 +50,29 @@ class ChatService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.repo = ConversationRepository(db)
+        self.attachment_repo = MessageAttachmentRepository(db)
+
+    async def _load_images(
+        self, image_ids: list[str] | None, user_id: str
+    ) -> tuple[list[str], list[MessageAttachment]]:
+        """Tải ảnh đã upload (POST /chat/images) → data URI base64 cho LLM.
+
+        Data isolation: chỉ chấp nhận attachment thuộc chính user_id (mirror
+        DocumentService._get_owned_or_404) — id lạ/không sở hữu → 404, không lộ tồn tại.
+        """
+        if not image_ids:
+            return [], []
+        attachments = await self.attachment_repo.get_owned(image_ids, user_id)
+        if len(attachments) != len(set(image_ids)):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found"
+            )
+        data_urls = []
+        for att in attachments:
+            file_bytes = await download_file_async(att.storage_path)
+            b64 = base64.b64encode(file_bytes).decode("ascii")
+            data_urls.append(f"data:{att.content_type};base64,{b64}")
+        return data_urls, attachments
 
     async def chat(
         self,
@@ -50,6 +88,7 @@ class ChatService:
         model: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        image_ids: list[str] | None = None,
     ) -> ChatResponse:
         # Get or create conversation
         if conversation_id:
@@ -63,8 +102,15 @@ class ChatService:
             title = message[:60] + ("..." if len(message) > 60 else "")
             conv = await self.repo.create(user_id=user_id, title=title)
 
-        # Save user message
-        await self.repo.add_message(conv.id, MessageRole.user, message)
+        # Ảnh gửi kèm (vision) — tải trước khi lưu message để 404 sớm nếu id không hợp lệ
+        image_data_urls, attachments = await self._load_images(image_ids, user_id)
+
+        # Save user message, rồi gắn ảnh đã upload (message_id=NULL) vào message vừa tạo
+        user_msg = await self.repo.add_message(conv.id, MessageRole.user, message)
+        if attachments:
+            await self.attachment_repo.attach_to_message(
+                [a.id for a in attachments], user_msg.id, user_id
+            )
 
         # Run agent graph.
         # Data isolation: retrieval chỉ chạm chunk của user (owner_id=user_id).
@@ -92,13 +138,14 @@ class ChatService:
             "model": model,
             "api_key": api_key,
             "base_url": base_url,
+            "image_data_urls": image_data_urls,
         }
         try:
             final_state = await graph.ainvoke(initial_state)
         except openai.APIError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=_friendly_llm_error(exc, model, api_key),
+                detail=_friendly_llm_error(exc, model, api_key, has_image=bool(image_data_urls)),
             ) from exc
         answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."
         citations = final_state.get("citations", [])
@@ -189,6 +236,7 @@ class ChatService:
         model: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        image_ids: list[str] | None = None,
     ) -> AsyncIterator[str]:
         """Streaming SSE: chạy retrieval rồi stream câu trả lời token-by-token.
 
@@ -202,6 +250,7 @@ class ChatService:
         def sse(payload: dict) -> str:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+        has_image = False
         try:
             if conversation_id:
                 conv = await self.repo.get_by_id(conversation_id, user_id)
@@ -212,7 +261,14 @@ class ChatService:
                 title = message[:60] + ("..." if len(message) > 60 else "")
                 conv = await self.repo.create(user_id=user_id, title=title)
 
-            await self.repo.add_message(conv.id, MessageRole.user, message)
+            image_data_urls, attachments = await self._load_images(image_ids, user_id)
+            has_image = bool(image_data_urls)
+
+            user_msg = await self.repo.add_message(conv.id, MessageRole.user, message)
+            if attachments:
+                await self.attachment_repo.attach_to_message(
+                    [a.id for a in attachments], user_msg.id, user_id
+                )
             yield sse({"type": "meta", "conversation_id": conv.id})
 
             # Chạy pipeline retrieval (dừng trước generator)
@@ -238,6 +294,7 @@ class ChatService:
                 "model": model,
                 "api_key": api_key,
                 "base_url": base_url,
+                "image_data_urls": image_data_urls,
             }
             state = await get_retrieval_graph().ainvoke(initial_state)
 
@@ -247,7 +304,10 @@ class ChatService:
             intent = state.get("intent", "rag")
             context, citations = _build_context(state)
 
-            if intent == "rag" and context:
+            # Có ảnh → luôn đi qua generator_node (nhánh else) để dùng chung logic dựng
+            # content đa phương thức (text + image_url) thay vì lặp lại ở đây; tránh
+            # phải viết + bảo trì multimodal streaming riêng cho nhánh fast-path.
+            if intent == "rag" and context and not has_image:
                 # Happy path: stream câu trả lời RAG token-by-token
                 messages = [
                     {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
@@ -265,7 +325,8 @@ class ChatService:
                 ):
                     citations = []
             else:
-                # chitchat / out_of_scope / không có context / web fallback → tái dùng generator
+                # chitchat / out_of_scope / không có context / web fallback / có ảnh
+                # → tái dùng generator (multimodal-aware)
                 from app.agents.generator import generator_node
 
                 final_state = await generator_node(state)
@@ -291,7 +352,12 @@ class ChatService:
 
             logging.getLogger(__name__).exception("chat_stream failed")
             await self.db.rollback()
-            yield sse({"type": "error", "detail": _friendly_llm_error(exc, model, api_key)})
+            yield sse(
+                {
+                    "type": "error",
+                    "detail": _friendly_llm_error(exc, model, api_key, has_image=has_image),
+                }
+            )
 
     async def get_history(self, user_id: str) -> list[ConversationResponse]:
         convs = await self.repo.list_by_user(user_id)
@@ -328,6 +394,13 @@ class ChatService:
                         pass
                     content = re.sub(r"\s*<!--citations:.*?-->", "", content, flags=re.DOTALL)
 
+            attachments = []
+            for att in m.attachments:
+                url = await get_presigned_url_async(att.storage_path, expires_seconds=3600)
+                attachments.append(
+                    AttachmentSchema(id=att.id, url=url, content_type=att.content_type)
+                )
+
             messages.append(
                 MessageResponse(
                     id=m.id,
@@ -335,6 +408,7 @@ class ChatService:
                     content=content,
                     created_at=m.created_at,
                     citations=citations,
+                    attachments=attachments,
                 )
             )
         return ConversationDetailResponse(
@@ -345,8 +419,19 @@ class ChatService:
         )
 
     async def delete_conversation(self, user_id: str, conv_id: str) -> None:
+        # Thu thập storage_path ảnh TRƯỚC khi xóa (record DB xóa cascade qua
+        # conversation → message → message_attachments ngay khi repo.delete() chạy).
+        attachment_paths = await self.attachment_repo.list_storage_paths_by_conversation(conv_id)
+
         deleted = await self.repo.delete(conv_id, user_id)
         if not deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
             )
+
+        # Dọn S3 nền qua Celery — record DB đã xóa (transaction ORM ở trên), S3 xóa
+        # không nằm trong transaction đó nên chạy tách rời, retry-safe, idempotent.
+        if attachment_paths:
+            from app.workers.tasks.ingestion import delete_chat_attachments
+
+            delete_chat_attachments.delay(attachment_paths)

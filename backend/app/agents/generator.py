@@ -23,6 +23,19 @@ OUT_OF_SCOPE_RESPONSE = (
 )
 
 
+def _build_user_content(text: str, state: AgentState) -> str | list[dict]:
+    """Dựng content cho message user — string thuần khi không có ảnh (giữ nguyên hành
+    vi cũ, regression-safe), mảng multimodal [text, image_url...] khi có ảnh gửi kèm.
+    BaseLLM.chat()/stream_chat() nhận thẳng dict này, không cần đổi interface LLM."""
+    image_urls = state.get("image_data_urls")
+    if not image_urls:
+        return text
+    return [
+        {"type": "text", "text": text},
+        *[{"type": "image_url", "image_url": {"url": url}} for url in image_urls],
+    ]
+
+
 def _build_context(state: AgentState) -> tuple[str, list[dict]]:
     chunks = state.get("reranked_results", [])
     if not chunks:
@@ -65,8 +78,9 @@ async def generator_node(state: AgentState) -> AgentState:
 
     if intent == "chitchat":
         llm = _get_llm(state)
+        user_content = _build_user_content(CHITCHAT_PROMPT.format(query=state["query"]), state)
         answer = await llm.chat(
-            messages=[{"role": "user", "content": CHITCHAT_PROMPT.format(query=state["query"])}],
+            messages=[{"role": "user", "content": user_content}],
             temperature=0.7,
             max_tokens=300,
         )
@@ -75,23 +89,31 @@ async def generator_node(state: AgentState) -> AgentState:
     # RAG path
     context, citations = _build_context(state)
     has_rag_context = bool(context)
+    has_image = bool(state.get("image_data_urls"))
 
     rag_answer: str | None = None
-    if has_rag_context:
+    if has_rag_context or has_image:
+        # Có ảnh nhưng không có context tài liệu (câu hỏi thuần về ảnh, hoặc retrieval
+        # không match gì) → vẫn gọi LLM với ảnh, KHÔNG rơi thẳng vào "not found" chỉ vì
+        # thiếu context text — ảnh tự nó đủ để trả lời được nhiều câu hỏi.
+        user_text = (
+            f"Context:\n{context}\n\nQuestion: {state['query']}"
+            if has_rag_context
+            else state["query"]
+        )
         llm = _get_llm(state)
-        user_message = f"Context:\n{context}\n\nQuestion: {state['query']}"
         system_prompt = state.get("system_prompt") or SYSTEM_PROMPT
         rag_answer = await llm.chat(
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
+                {"role": "user", "content": _build_user_content(user_text, state)},
             ],
             temperature=0.1,
         )
 
-    # Detect if context is empty or LLM says not found
+    # Detect if context/image is empty or LLM says not found
     is_not_found = (
-        not has_rag_context
+        not (has_rag_context or has_image)
         or not rag_answer
         or "Not found in documents." in rag_answer
         or "Không tìm thấy trong tài liệu." in rag_answer

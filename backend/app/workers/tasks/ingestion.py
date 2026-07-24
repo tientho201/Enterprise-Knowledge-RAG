@@ -396,3 +396,33 @@ def reindex_document(self, document_id: str, storage_path: str) -> dict:
 
     except Exception as exc:
         raise self.retry(exc=exc)
+
+
+# ── Chat attachments (ảnh gửi kèm chat — không phải document) ─────────────────
+
+
+@celery_app.task(
+    name="app.workers.tasks.ingestion.delete_chat_attachments",
+    bind=True,
+    max_retries=3,
+    retry_backoff=True,
+)
+def delete_chat_attachments(self, storage_paths: list[str]) -> dict:
+    """Xóa ảnh chat khỏi S3 SAU KHI record `message_attachments` đã xóa ở DB (cascade
+    qua xóa hội thoại/tin nhắn — xem ChatService.delete_conversation). Tách khỏi
+    ingest_document/delete_document_vectors vì ảnh chat không đụng Qdrant/Neo4j, chỉ
+    dùng chung queue "ingestion" hiện có để không cần đổi lệnh chạy worker.
+
+    Idempotent: file đã không tồn tại (S3 delete_objects trên key vắng mặt) không bị
+    coi là lỗi — an toàn khi Celery tự retry.
+    """
+    if not storage_paths:
+        return {"status": "noop"}
+    try:
+        from app.storage.s3_client import get_s3_client
+
+        get_s3_client().delete_files(storage_paths)
+        logger.debug("Chat attachments deleted from S3: %d files", len(storage_paths))
+        return {"status": "deleted", "count": len(storage_paths)}
+    except Exception as exc:
+        raise self.retry(exc=exc)

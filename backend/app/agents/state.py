@@ -29,3 +29,7 @@ class AgentState(TypedDict):
     model: str | None
     api_key: str | None
     base_url: str | None
+    # Ảnh gửi kèm tin nhắn (vision, ngữ cảnh tạm — KHÔNG phải tài liệu thư viện).
+    # Data URI base64 sẵn sàng đưa vào content part {"type":"image_url","image_url":{"url":...}}.
+    # None/rỗng → hành vi y hệt trước đây (regression-safe).
+    image_data_urls: list[str] | None

@@ -14,7 +14,10 @@ class ConversationRepository:
         result = await self.db.execute(
             select(Conversation)
             .where(Conversation.id == conv_id, Conversation.user_id == user_id)
-            .options(selectinload(Conversation.messages).selectinload(Message.citations))
+            .options(
+                selectinload(Conversation.messages).selectinload(Message.citations),
+                selectinload(Conversation.messages).selectinload(Message.attachments),
+            )
         )
         return result.scalar_one_or_none()
 
