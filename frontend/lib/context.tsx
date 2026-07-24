@@ -16,6 +16,7 @@ import {
   type ConversationSummary,
   type ChatMessage,
   type Citation,
+  type ChatAttachment,
 } from "./api"
 
 // ============================================================
@@ -29,6 +30,8 @@ export interface Message {
   isStreaming?: boolean;
   timestamp: string;
   citations?: Citation[];
+  // Ảnh gửi kèm (vision) — chỉ tin nhắn user có. Ngữ cảnh tạm, KHÔNG phải tài liệu thư viện.
+  attachments?: ChatAttachment[];
 }
 
 export interface User {
@@ -133,7 +136,11 @@ interface AppContextType {
   addSavedResearch: (title: string, content: string, docIds: string[]) => void;
   handleNewChat: () => void;
   handleDeleteSession: (id: string, e?: React.MouseEvent) => void;
-  handleSendMessage: (messageText: string, searchTool?: boolean | null) => void;
+  handleSendMessage: (
+    messageText: string,
+    searchTool?: boolean | null,
+    images?: ChatAttachment[]
+  ) => void;
   isLlmGenerating: boolean;
   setIsLlmGenerating: React.Dispatch<React.SetStateAction<boolean>>;
   showRagProcessId: string | null;
@@ -331,6 +338,7 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
         content: preprocessCitations(m.content, m.citations),
         timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         citations: m.citations,
+        attachments: m.attachments && m.attachments.length > 0 ? m.attachments : undefined,
       }))
 
       setChatSessions(prev => prev.map(s =>
@@ -555,8 +563,12 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     addAuditLog("Đã xóa hội thoại", "query", `ID hội thoại: ${id}`)
   }
 
-  const handleSendMessage = async (messageText: string, searchTool?: boolean | null) => {
-    if (!messageText.trim() || isLlmGenerating) return
+  const handleSendMessage = async (
+    messageText: string,
+    searchTool?: boolean | null,
+    images?: ChatAttachment[]
+  ) => {
+    if ((!messageText.trim() && !images?.length) || isLlmGenerating) return
 
     // 1. Add user message to UI immediately
     const userMsgId = `u-${Date.now()}`
@@ -564,7 +576,8 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       id: userMsgId,
       role: "user",
       content: messageText,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      attachments: images && images.length > 0 ? images : undefined,
     }
 
     const currentSession = activeSession
@@ -674,6 +687,7 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
         apiKey: selectedCustomModel?.apiKey,
         baseUrl: selectedCustomModel?.baseUrl,
         searchMode: SEARCH_MODE_TO_BACKEND[ragSettings.searchMode] ?? "hybrid",
+        imageIds: images && images.length > 0 ? images.map(i => i.id) : null,
       })
     } catch (err) {
       console.error("Failed to send message:", err)

@@ -34,11 +34,32 @@ import {
   Eye,
   EyeOff,
   Key,
-  CirclePlus
+  CirclePlus,
+  ImagePlus,
+  Loader2
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useApp, CustomModel, SYSTEM_DEFAULT_MODEL } from "@/lib/context"
-import { type Citation, type Document } from "@/lib/api"
+import {
+  type Citation,
+  type Document,
+  type ChatAttachment,
+  chatAPI,
+  ApiError,
+  MAX_CHAT_IMAGE_SIZE,
+  MAX_CHAT_IMAGES,
+  ALLOWED_CHAT_IMAGE_TYPES,
+} from "@/lib/api"
+
+// Ảnh đang đính kèm ở ô nhập chat — có thể đang upload dở. localPreview là blob URL
+// tạm để hiện ngay lập tức, revoke khi gửi/xoá xong.
+interface PendingImage {
+  id: string
+  url: string
+  content_type: string
+  uploading: boolean
+  localPreview?: string
+}
 
 // Các bước "suy nghĩ" hiển thị trong lúc chờ backend trả lời (giống thinking của
 // Claude Desktop). Hiện dần từng bước rồi tự ẩn khi câu trả lời bắt đầu về.
@@ -128,6 +149,9 @@ export default function Page() {
   const [newModelBaseUrl, setNewModelBaseUrl] = useState<string>("")
   const [showAddModel, setShowAddModel] = useState<boolean>(false)
   const [visibleApiKeys, setVisibleApiKeys] = useState<Set<string>>(new Set())
+  // Ảnh đính kèm chat (vision) — ngữ cảnh tạm cho lượt hỏi này, KHÔNG phải tài liệu thư viện.
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([])
+  const [imageError, setImageError] = useState<string | null>(null)
 
   // Model do quản trị hệ thống cấu hình sẵn ở backend (xem LLM_PROVIDER/.env) — không
   // có danh sách provider cụ thể ở đây vì lựa chọn thật sự nằm ở "Model tùy chỉnh" bên dưới.
@@ -138,6 +162,7 @@ export default function Page() {
   // Refs
   const chatEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -159,9 +184,97 @@ export default function Page() {
   }
 
   const handleSend = () => {
-    if (!inputMessage.trim()) return
-    handleSendMessage(inputMessage, searchToolEnabled)
+    if (!inputMessage.trim() && pendingImages.length === 0) return
+    if (pendingImages.some(img => img.uploading)) return
+    const images: ChatAttachment[] = pendingImages.map(img => ({
+      id: img.id,
+      url: img.url,
+      content_type: img.content_type,
+    }))
+    handleSendMessage(inputMessage, searchToolEnabled, images)
     setInputMessage("")
+    pendingImages.forEach(img => img.localPreview && URL.revokeObjectURL(img.localPreview))
+    setPendingImages([])
+  }
+
+  // Upload 1+ ảnh gửi kèm chat (vision) — preview local ngay, thay bằng URL server khi
+  // upload xong. Validate ở FE chỉ là UX (loại sai định dạng/quá lớn/quá số lượng sớm);
+  // backend mới là chặn thật (magic bytes, 8MB, owner_id).
+  const attachImages = async (files: File[]) => {
+    const remainingSlots = MAX_CHAT_IMAGES - pendingImages.length
+    if (remainingSlots <= 0) {
+      setImageError(`Chỉ đính kèm tối đa ${MAX_CHAT_IMAGES} ảnh/tin nhắn`)
+      return
+    }
+    const toUpload = files.slice(0, remainingSlots)
+    if (files.length > toUpload.length) {
+      setImageError(`Chỉ đính kèm tối đa ${MAX_CHAT_IMAGES} ảnh/tin nhắn`)
+    }
+
+    for (const file of toUpload) {
+      if (!ALLOWED_CHAT_IMAGE_TYPES.includes(file.type)) {
+        setImageError(`Định dạng không hỗ trợ: ${file.name} (chỉ PNG, JPEG, WEBP)`)
+        continue
+      }
+      if (file.size > MAX_CHAT_IMAGE_SIZE) {
+        setImageError(`Ảnh quá lớn: ${file.name} (tối đa ${MAX_CHAT_IMAGE_SIZE / (1024 * 1024)}MB)`)
+        continue
+      }
+
+      const tempId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const localPreview = URL.createObjectURL(file)
+      setPendingImages(prev => [
+        ...prev,
+        { id: tempId, url: localPreview, content_type: file.type, uploading: true, localPreview },
+      ])
+
+      try {
+        const uploaded = await chatAPI.uploadImage(file)
+        setPendingImages(prev =>
+          prev.map(img =>
+            img.id === tempId
+              ? { id: uploaded.id, url: uploaded.url, content_type: uploaded.content_type, uploading: false, localPreview }
+              : img
+          )
+        )
+      } catch (err) {
+        setPendingImages(prev => prev.filter(img => img.id !== tempId))
+        URL.revokeObjectURL(localPreview)
+        setImageError(err instanceof ApiError ? err.detail : `Tải ảnh lên thất bại: ${file.name}`)
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (!imageError) return
+    const t = setTimeout(() => setImageError(null), 4000)
+    return () => clearTimeout(t)
+  }, [imageError])
+
+  const handleImageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      attachImages(Array.from(e.target.files))
+    }
+    e.target.value = ""
+  }
+
+  const handleTextareaPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageFiles = Array.from(e.clipboardData.items)
+      .filter(item => item.kind === "file" && item.type.startsWith("image/"))
+      .map(item => item.getAsFile())
+      .filter((f): f is File => f !== null)
+    if (imageFiles.length > 0) {
+      e.preventDefault()
+      attachImages(imageFiles)
+    }
+  }
+
+  const removeImage = (id: string) => {
+    setPendingImages(prev => {
+      const target = prev.find(img => img.id === id)
+      if (target?.localPreview) URL.revokeObjectURL(target.localPreview)
+      return prev.filter(img => img.id !== id)
+    })
   }
 
   const onDragOver = (e: React.DragEvent) => {
@@ -501,7 +614,24 @@ export default function Page() {
                             )}
                           </div>
                         ) : (
-                          <p className="whitespace-pre-wrap leading-relaxed text-[14px]">{message.content}</p>
+                          <div>
+                            {message.attachments && message.attachments.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 mb-2">
+                                {message.attachments.map((att) => (
+                                  // eslint-disable-next-line @next/next/no-img-element -- presigned S3 URL, domain thay đổi theo env
+                                  <img
+                                    key={att.id}
+                                    src={att.url}
+                                    alt="Ảnh đính kèm"
+                                    className="w-40 h-40 rounded-lg border border-white/[0.08] object-cover"
+                                  />
+                                ))}
+                              </div>
+                            )}
+                            {message.content && (
+                              <p className="whitespace-pre-wrap leading-relaxed text-[14px]">{message.content}</p>
+                            )}
+                          </div>
                         )}
 
                         {/* Timestamp */}
@@ -524,6 +654,41 @@ export default function Page() {
           <div className="max-w-3xl mx-auto space-y-2">
             <div className="input-container rounded-2xl border border-white/[0.06] bg-white/[0.02] flex flex-col p-1">
               
+              {/* Ảnh đính kèm (vision) — preview + xoá trước khi gửi */}
+              {pendingImages.length > 0 && (
+                <div className="flex flex-wrap gap-2 px-3 pt-2.5 animate-msg-in">
+                  {pendingImages.map((img) => (
+                    <div key={img.id} className="relative w-14 h-14 shrink-0 group">
+                      {/* eslint-disable-next-line @next/next/no-img-element -- blob/presigned URL, domain thay đổi theo env */}
+                      <img
+                        src={img.localPreview || img.url}
+                        alt="Ảnh đính kèm"
+                        className="w-14 h-14 rounded-lg border border-white/[0.08] object-cover"
+                      />
+                      {img.uploading && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg">
+                          <Loader2 className="w-4 h-4 text-white animate-spin" />
+                        </div>
+                      )}
+                      <button
+                        onClick={() => removeImage(img.id)}
+                        className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-neutral-800 border border-white/10 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-neutral-700 transition-colors cursor-pointer"
+                        title="Xoá ảnh"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Lỗi validate ảnh (định dạng/kích thước/số lượng) */}
+              {imageError && (
+                <div className="px-3 pt-2 text-[11px] text-red-400/90 animate-msg-in">
+                  {imageError}
+                </div>
+              )}
+
               {/* Textarea */}
               <textarea
                 value={inputMessage}
@@ -534,6 +699,7 @@ export default function Page() {
                     handleSend()
                   }
                 }}
+                onPaste={handleTextareaPaste}
                 placeholder="Hỏi về quy chế, điều luật doanh nghiệp..."
                 className="w-full bg-transparent border-0 ring-0 focus:outline-none focus:ring-0 text-[14px] text-neutral-200 px-3 py-2.5 resize-none h-[56px] placeholder:text-neutral-600"
               />
@@ -577,7 +743,7 @@ export default function Page() {
                     <Plus className="w-4 h-4" />
                   </button>
 
-                  <button 
+                  <button
                     onClick={() => {
                       setShowRightPanel(true)
                       setRightPanelTab("docs")
@@ -587,7 +753,24 @@ export default function Page() {
                   >
                     <Paperclip className="w-4 h-4" />
                   </button>
-                  
+
+                  <button
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={pendingImages.length >= MAX_CHAT_IMAGES}
+                    className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-300 hover:bg-white/[0.04] transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                    title="Đính kèm ảnh (hỏi về ảnh, không lưu vào thư viện)"
+                  >
+                    <ImagePlus className="w-4 h-4" />
+                  </button>
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept={ALLOWED_CHAT_IMAGE_TYPES.join(",")}
+                    multiple
+                    className="hidden"
+                    onChange={handleImageInputChange}
+                  />
+
                   <span className="text-[10px] text-neutral-600 select-none ml-1">
                     Enter để gửi · Shift+Enter xuống dòng
                   </span>
@@ -596,9 +779,9 @@ export default function Page() {
                 {/* Send Button */}
                 <button
                   onClick={handleSend}
-                  disabled={!inputMessage.trim() || isLlmGenerating}
+                  disabled={(!inputMessage.trim() && pendingImages.length === 0) || isLlmGenerating || pendingImages.some(img => img.uploading)}
                   className={`p-2 rounded-xl transition-all ${
-                    inputMessage.trim() && !isLlmGenerating
+                    (inputMessage.trim() || pendingImages.length > 0) && !isLlmGenerating && !pendingImages.some(img => img.uploading)
                       ? "bg-emerald-500/80 text-white hover:bg-emerald-500 active:scale-95"
                       : "bg-white/[0.03] text-neutral-700 cursor-not-allowed"
                   }`}

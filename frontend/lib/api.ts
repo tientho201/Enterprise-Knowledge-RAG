@@ -15,6 +15,12 @@ const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 // ============================================================
 export const MOCK_MODE = false;
 
+// Ảnh gửi kèm chat (vision) — mirror backend (services/chat_attachment_service.py,
+// schemas/chat.py::ChatRequest.image_ids). Check ở FE chỉ là UX, backend mới chặn thật.
+export const MAX_CHAT_IMAGE_SIZE = 8 * 1024 * 1024;
+export const MAX_CHAT_IMAGES = 3;
+export const ALLOWED_CHAT_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+
 // --------------- Token helpers ---------------
 
 export function getAccessToken(): string | null {
@@ -183,12 +189,20 @@ export interface Citation {
   content_snippet: string;
 }
 
+// Ảnh gửi kèm chat (vision) — ngữ cảnh tạm, KHÔNG phải tài liệu thư viện.
+export interface ChatAttachment {
+  id: string;
+  url: string;
+  content_type: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   created_at: string;
   citations: Citation[];
+  attachments: ChatAttachment[];
 }
 
 export interface ChatResponse {
@@ -302,6 +316,18 @@ export interface StreamCallbacks {
 }
 
 export const chatAPI = {
+  // Ảnh gửi kèm chat (vision) — upload trước, trả về id để tham chiếu trong
+  // sendMessageStream/sendMessage. KHÔNG vào thư viện tài liệu.
+  async uploadImage(file: File): Promise<ChatAttachment> {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await apiFetch("/api/v1/chat/images", {
+      method: "POST",
+      body: formData,
+    });
+    return handleResponse<ChatAttachment>(res);
+  },
+
   // Streaming (SSE): câu trả lời hiện dần token-by-token. FE cập nhật nội dung tin
   // nhắn khi từng `delta` về, gắn citations lúc `done`.
   async sendMessageStream(
@@ -322,6 +348,8 @@ export const chatAPI = {
       // Chế độ tra cứu chọn ở panel Cấu hình. "advanced" bị backend gate theo plan
       // (403 nếu free) — xem core/plan_gate.py. Không gửi -> hành vi mặc định hiện tại.
       searchMode?: "hybrid" | "vector" | "keyword" | "advanced" | null;
+      // Ảnh đã upload qua chatAPI.uploadImage — id để backend tải lại + gửi cho LLM.
+      imageIds?: string[] | null;
     }
   ): Promise<void> {
     const res = await apiFetch("/api/v1/chat/stream", {
@@ -343,6 +371,7 @@ export const chatAPI = {
         apiKey: options?.apiKey || null,
         baseUrl: options?.apiKey ? options?.baseUrl || null : null,
         searchMode: options?.searchMode ?? null,
+        imageIds: options?.imageIds ?? null,
       }),
     });
 
