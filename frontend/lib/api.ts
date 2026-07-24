@@ -179,6 +179,13 @@ export interface LoginResponse {
   token_type: string;
 }
 
+// Trả về sau /register và /resend-otp — tài khoản đang chờ xác minh OTP, KHÔNG
+// phải AuthUser đầy đủ (backend chưa cho login tới khi verify xong).
+export interface OtpPendingResponse {
+  email: string;
+  message: string;
+}
+
 export interface Citation {
   chunk_id: string;
   document_id: string;
@@ -278,13 +285,35 @@ export const authAPI = {
     return handleResponse<LoginResponse>(res);
   },
 
-  async register(email: string, password: string, full_name?: string | null): Promise<AuthUser> {
+  async register(
+    email: string,
+    password: string,
+    full_name?: string | null
+  ): Promise<OtpPendingResponse> {
     const res = await apiFetch("/api/v1/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, full_name: full_name || null }),
     }, true);
-    return handleResponse<AuthUser>(res);
+    return handleResponse<OtpPendingResponse>(res);
+  },
+
+  async verifyOtp(email: string, otp_code: string): Promise<LoginResponse> {
+    const res = await apiFetch("/api/v1/auth/verify-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, otp_code }),
+    }, true);
+    return handleResponse<LoginResponse>(res);
+  },
+
+  async resendOtp(email: string): Promise<OtpPendingResponse> {
+    const res = await apiFetch("/api/v1/auth/resend-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    }, true);
+    return handleResponse<OtpPendingResponse>(res);
   },
 
   async me(): Promise<AuthUser> {

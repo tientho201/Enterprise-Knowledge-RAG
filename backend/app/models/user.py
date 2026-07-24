@@ -39,6 +39,9 @@ class User(Base, UUIDMixin, TimestampMixin):
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, default=UserRole.viewer)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Riêng biệt với is_active (đó là cờ admin khóa/mở tài khoản). email_verified=False
+    # tới khi user xác minh OTP gửi qua email lúc đăng ký — xem core/otp.py + auth_service.
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     plan: Mapped[UserPlan] = mapped_column(Enum(UserPlan), nullable=False, default=UserPlan.free)
     # None = không áp dụng hạn (vd đang free, hoặc pro vô thời hạn). Có giá trị + đã qua
     # -> coi như hết hạn dù plan vẫn ghi "pro" (chưa có job tự hạ cấp — việc đó thuộc

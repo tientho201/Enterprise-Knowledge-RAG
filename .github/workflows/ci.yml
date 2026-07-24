@@ -123,9 +123,10 @@ jobs:
           path: backend/reports/
 
   # ─────────────────────────────────────────────
-  # JOB 3: Integration tests — auth flow (chỉ cần PostgreSQL)
-  # Qdrant/Redis/Neo4j/LocalStack CHƯA cần: integration test hiện chỉ có auth.
-  # Thêm lại từng service khi có integration test ingestion/retrieval thực tế.
+  # JOB 3: Integration tests — auth flow (PostgreSQL + Redis)
+  # Redis cần từ khi auth/register có luồng OTP (lưu mã ở Redis + dispatch Celery
+  # task gửi email qua broker Redis). Qdrant/Neo4j/LocalStack vẫn CHƯA cần: thêm
+  # lại khi có integration test ingestion/retrieval thực tế.
   # ─────────────────────────────────────────────
   test-integration:
     name: Integration tests (auth)
@@ -147,11 +148,23 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     env:
       APP_ENV: test
       SECRET_KEY: "ci-test-secret-key-not-for-production"
       DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/enterprise_rag_test"
+      REDIS_URL: "redis://localhost:6379/0"
+      CELERY_BROKER_URL: "redis://localhost:6379/0"
+      CELERY_RESULT_BACKEND: "redis://localhost:6379/1"
       OPENAI_API_KEY: "sk-test-fake-key-for-ci"
       QDRANT_URL: "http://localhost:6333"
       QDRANT_API_KEY: "test-key"

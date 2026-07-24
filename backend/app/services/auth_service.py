@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import otp
 from app.core.plan_gate import can_use_advanced_search
 from app.core.security import (
     create_access_token,
@@ -11,7 +12,9 @@ from app.core.security import (
 )
 from app.models.user import User, UserPlan
 from app.repositories.user_repo import UserRepository
-from app.schemas.auth import TokenResponse, UserResponse
+from app.schemas.auth import OtpPendingResponse, TokenResponse, UserResponse
+
+_OTP_SENT_MESSAGE = "Mã OTP xác minh đã được gửi tới email của bạn. Vui lòng kiểm tra hộp thư."
 
 
 def _to_user_response(user: User) -> UserResponse:
@@ -36,19 +39,74 @@ class AuthService:
         email: str,
         password: str,
         full_name: str | None = None,
-    ) -> UserResponse:
+    ) -> OtpPendingResponse:
         existing = await self.repo.get_by_email(email)
         if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Email already registered",
+            if existing.email_verified:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Email already registered",
+                )
+            # Đăng ký lại trong lúc bản ghi cũ chưa xác minh OTP (vd quên, gõ sai
+            # mật khẩu, hoặc mã hết hạn) — ghi đè mật khẩu/tên và gửi OTP mới thay
+            # vì kẹt vĩnh viễn hoặc trả 409 cho 1 tài khoản chưa từng dùng được.
+            user = await self.repo.update_password_and_name(
+                existing, hash_password(password), full_name
             )
-        user = await self.repo.create(
-            email=email,
-            password_hash=hash_password(password),
-            full_name=full_name,
+        else:
+            user = await self.repo.create(
+                email=email,
+                password_hash=hash_password(password),
+                full_name=full_name,
+                email_verified=False,
+            )
+        await self._issue_and_send_otp(user)
+        return OtpPendingResponse(email=user.email, message=_OTP_SENT_MESSAGE)
+
+    async def verify_otp(self, email: str, otp_code: str) -> TokenResponse:
+        user = await self.repo.get_by_email(email)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email hoặc mã OTP không hợp lệ.",
+            )
+        if user.email_verified:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email đã được xác minh trước đó. Vui lòng đăng nhập.",
+            )
+        await otp.verify_otp(user.id, otp_code)
+        await self.repo.verify_email(user.id)
+        return TokenResponse(
+            access_token=create_access_token(user.id),
+            refresh_token=create_refresh_token(user.id),
         )
-        return _to_user_response(user)
+
+    async def resend_otp(self, email: str) -> OtpPendingResponse:
+        user = await self.repo.get_by_email(email)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        if user.email_verified:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email đã được xác minh trước đó. Vui lòng đăng nhập.",
+            )
+        wait_seconds = await otp.seconds_until_resend_allowed(user.id)
+        if wait_seconds > 0:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Vui lòng đợi {wait_seconds}s trước khi yêu cầu gửi lại mã.",
+                headers={"Retry-After": str(wait_seconds)},
+            )
+        await self._issue_and_send_otp(user)
+        return OtpPendingResponse(email=user.email, message=_OTP_SENT_MESSAGE)
+
+    async def _issue_and_send_otp(self, user: User) -> None:
+        code = await otp.issue_otp(user.id)
+        await otp.start_resend_cooldown(user.id)
+        from app.workers.tasks.email import send_otp_email
+
+        send_otp_email.delay(user.email, code, user.full_name)
 
     async def login(self, email: str, password: str) -> TokenResponse:
         user = await self.repo.get_by_email(email)
@@ -61,6 +119,11 @@ class AuthService:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Account is deactivated",
+            )
+        if not user.email_verified:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Email chưa được xác minh. Vui lòng kiểm tra OTP đã gửi tới email.",
             )
         return TokenResponse(
             access_token=create_access_token(user.id),

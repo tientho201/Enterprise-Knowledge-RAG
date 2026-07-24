@@ -154,7 +154,15 @@ interface AppContextType {
   user: User | null;
   isAuthLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  register: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  // Đăng ký giờ KHÔNG auto-login nữa — trả về pendingEmail để UI chuyển sang màn
+  // nhập OTP (xem verifyOtp/resendOtp). success=true nghĩa là OTP đã được gửi.
+  register: (
+    name: string,
+    email: string,
+    password: string
+  ) => Promise<{ success: boolean; error?: string; pendingEmail?: string }>;
+  verifyOtp: (email: string, otpCode: string) => Promise<{ success: boolean; error?: string }>;
+  resendOtp: (email: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   refreshUser: () => Promise<void>;
   refreshDocuments: () => Promise<void>;
@@ -486,11 +494,20 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
 
   const register = async (name: string, email: string, password: string) => {
     try {
-      // 1. Register
+      // Không auto-login nữa — backend gửi OTP xác minh email, phải verify xong
+      // mới có token (xem verifyOtp). UI chuyển sang màn nhập OTP dựa vào pendingEmail.
       await authAPI.register(email, password, name)
+      addAuditLog(`Đăng ký tài khoản mới — chờ xác minh OTP`, "config", `Name: ${name} | Email: ${email}`)
+      return { success: true, pendingEmail: email }
+    } catch (err) {
+      const message = err instanceof ApiError ? err.detail : "Có lỗi xảy ra khi đăng ký!"
+      return { success: false, error: message }
+    }
+  }
 
-      // 2. Auto-login after register
-      const tokens = await authAPI.login(email, password)
+  const verifyOtp = async (email: string, otpCode: string) => {
+    try {
+      const tokens = await authAPI.verifyOtp(email, otpCode)
       setTokens(tokens.access_token, tokens.refresh_token)
 
       const authUser = await authAPI.me()
@@ -498,11 +515,21 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       setUser(userInfo)
 
       await Promise.all([refreshDocuments(), refreshChatHistory(), refreshAuditLogs()])
-      addAuditLog(`Đăng ký tài khoản mới thành công`, "config", `Name: ${name} | Email: ${email}`)
+      addAuditLog(`Xác minh OTP thành công — tài khoản đã kích hoạt`, "config", `Email: ${email}`)
 
       return { success: true }
     } catch (err) {
-      const message = err instanceof ApiError ? err.detail : "Có lỗi xảy ra khi đăng ký!"
+      const message = err instanceof ApiError ? err.detail : "Mã OTP không hợp lệ!"
+      return { success: false, error: message }
+    }
+  }
+
+  const resendOtp = async (email: string) => {
+    try {
+      await authAPI.resendOtp(email)
+      return { success: true }
+    } catch (err) {
+      const message = err instanceof ApiError ? err.detail : "Không thể gửi lại mã OTP!"
       return { success: false, error: message }
     }
   }
@@ -958,6 +985,8 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       isAuthLoading,
       login,
       register,
+      verifyOtp,
+      resendOtp,
       logout,
       refreshUser,
       refreshDocuments,

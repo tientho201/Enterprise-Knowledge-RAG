@@ -22,16 +22,37 @@ class UserRepository:
         password_hash: str,
         full_name: str | None = None,
         role: UserRole = UserRole.viewer,
+        email_verified: bool = False,
     ) -> User:
         user = User(
             email=email,
             password_hash=password_hash,
             full_name=full_name,
             role=role,
+            email_verified=email_verified,
         )
         self.db.add(user)
         await self.db.flush()
         await self.db.refresh(user)
+        return user
+
+    async def verify_email(self, user_id: str) -> User | None:
+        user = await self.get_by_id(user_id)
+        if user:
+            user.email_verified = True
+            await self.db.flush()
+        return user
+
+    async def update_password_and_name(
+        self, user: User, password_hash: str, full_name: str | None
+    ) -> User:
+        """Dùng khi 1 email đăng ký lại trong lúc tài khoản cũ chưa xác minh OTP —
+        cho phép ghi đè mật khẩu/tên thay vì kẹt vĩnh viễn ở bản ghi chưa verify
+        đầu tiên (xem AuthService.register). Nhận thẳng User đã fetch sẵn (thay vì
+        user_id) vì caller luôn đã có bản ghi trong tay, tránh Optional thừa."""
+        user.password_hash = password_hash
+        user.full_name = full_name
+        await self.db.flush()
         return user
 
     async def update_role(self, user_id: str, role: UserRole) -> User | None:

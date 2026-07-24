@@ -9,6 +9,23 @@ class RegisterRequest(BaseModel):
     full_name: str | None = None
 
 
+class OtpPendingResponse(BaseModel):
+    """Trả về sau /register và /resend-otp — báo hiệu tài khoản đang chờ xác minh
+    email, KHÔNG phải UserResponse đầy đủ (tránh lộ role/plan trước khi verify)."""
+
+    email: str
+    message: str
+
+
+class VerifyOtpRequest(BaseModel):
+    email: EmailStr
+    otp_code: str = Field(min_length=6, max_length=6)
+
+
+class ResendOtpRequest(BaseModel):
+    email: EmailStr
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str

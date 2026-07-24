@@ -8,11 +8,14 @@ from app.core.security import decode_token
 from app.core.token_blacklist import blacklist_token
 from app.schemas.auth import (
     LoginRequest,
+    OtpPendingResponse,
     RefreshTokenRequest,
     RegisterRequest,
+    ResendOtpRequest,
     TokenResponse,
     UpdatePlanRequest,
     UserResponse,
+    VerifyOtpRequest,
 )
 from app.services.auth_service import AuthService
 
@@ -20,10 +23,25 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _bearer = HTTPBearer()
 
 
-@router.post("/register", response_model=UserResponse, status_code=201)
+@router.post("/register", response_model=OtpPendingResponse, status_code=201)
 async def register(body: RegisterRequest, db: DbDep):
+    """Tạo tài khoản (chưa active để đăng nhập) và gửi mã OTP xác minh qua email.
+    Gọi `/auth/verify-otp` để hoàn tất đăng ký."""
     service = AuthService(db)
     return await service.register(body.email, body.password, body.full_name)
+
+
+@router.post("/verify-otp", response_model=TokenResponse)
+async def verify_otp(body: VerifyOtpRequest, db: DbDep):
+    """Xác minh mã OTP đã gửi lúc /register — thành công thì trả token (auto-login)."""
+    service = AuthService(db)
+    return await service.verify_otp(body.email, body.otp_code)
+
+
+@router.post("/resend-otp", response_model=OtpPendingResponse)
+async def resend_otp(body: ResendOtpRequest, db: DbDep):
+    service = AuthService(db)
+    return await service.resend_otp(body.email)
 
 
 @router.post("/login", response_model=TokenResponse)

@@ -120,6 +120,20 @@ class Settings(BaseSettings):
     # tài liệu thư viện). Ngưỡng cao hơn vì user có thể paste nhiều screenshot liên tiếp.
     CHAT_IMAGE_RATE_LIMIT_PER_MINUTE: int = 30
 
+    # ── SMTP / OTP đăng ký (xác minh email qua mã 6 số) ──────────────────────
+    # SMTP_HOST rỗng = chưa cấu hình → Celery task bỏ qua gửi thật (log warning),
+    # không raise lỗi (giống cách Neo4j graceful-degrade khi service phụ chưa sẵn).
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = ""
+    SMTP_USE_TLS: bool = True
+    # OTP lưu ở Redis (không phải cột DB) — tự hết hạn bằng TTL, không cần job dọn.
+    OTP_EXPIRE_MINUTES: int = 10
+    OTP_RESEND_COOLDOWN_SECONDS: int = 60
+    OTP_MAX_ATTEMPTS: int = 5
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]
 

@@ -19,6 +19,7 @@ celery_app = Celery(
     include=[
         "app.workers.tasks.ingestion",
         "app.workers.tasks.sync",
+        "app.workers.tasks.email",
     ],
 )
 
@@ -36,5 +37,8 @@ celery_app.conf.update(
     task_routes={
         "app.workers.tasks.ingestion.*": {"queue": "ingestion"},
         "app.workers.tasks.sync.*": {"queue": "sync"},
+        # Tái dùng queue "sync" (không thêm queue mới) — tránh phải đổi lệnh
+        # `celery worker -Q ingestion,sync` đã ghi trong CLAUDE.md.
+        "app.workers.tasks.email.*": {"queue": "sync"},
     },
 )
