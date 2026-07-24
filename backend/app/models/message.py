@@ -11,6 +11,7 @@ from app.db.base import Base, TimestampMixin, UUIDMixin
 if TYPE_CHECKING:
     from app.models.citation import Citation
     from app.models.conversation import Conversation
+    from app.models.message_attachment import MessageAttachment
 
 
 class MessageRole(enum.StrEnum):
@@ -31,4 +32,8 @@ class Message(Base, UUIDMixin, TimestampMixin):
     conversation: Mapped[Conversation] = relationship("Conversation", back_populates="messages")
     citations: Mapped[list[Citation]] = relationship(
         "Citation", back_populates="message", cascade="all, delete-orphan"
+    )
+    # Ảnh gửi kèm tin nhắn (vision, tạm thời — không phải tài liệu thư viện).
+    attachments: Mapped[list[MessageAttachment]] = relationship(
+        "MessageAttachment", back_populates="message", cascade="all, delete-orphan"
     )

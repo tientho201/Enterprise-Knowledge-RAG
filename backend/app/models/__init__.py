@@ -5,6 +5,7 @@ from app.models.conversation import Conversation
 from app.models.document import Document
 from app.models.document_conversation import DocumentConversation
 from app.models.message import Message
+from app.models.message_attachment import MessageAttachment
 from app.models.user import User
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "Chunk",
     "Conversation",
     "Message",
+    "MessageAttachment",
     "Citation",
     "AuditLog",
 ]

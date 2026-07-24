@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
@@ -7,14 +7,31 @@ from app.core.plan_gate import require_advanced_search_access
 from app.core.rate_limit import rate_limiter
 from app.models.user import UserRole
 from app.schemas.chat import (
+    AttachmentUploadResponse,
     ChatRequest,
     ChatResponse,
     ConversationDetailResponse,
     ConversationResponse,
 )
+from app.services.chat_attachment_service import ChatAttachmentService
 from app.services.chat_service import ChatService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+@router.post(
+    "/images",
+    response_model=AttachmentUploadResponse,
+    status_code=201,
+    dependencies=[
+        Depends(rate_limiter(settings.CHAT_IMAGE_RATE_LIMIT_PER_MINUTE, 60, "chat-image")),
+    ],
+)
+async def upload_chat_image(file: UploadFile, user: CurrentUserDep, db: DbDep):
+    """Upload 1 ảnh gửi kèm chat (vision). Ngữ cảnh tạm cho 1 lượt hỏi đáp — KHÔNG vào
+    thư viện tài liệu. Trả về attachment id để tham chiếu trong ChatRequest.image_ids."""
+    service = ChatAttachmentService(db)
+    return await service.upload(file, owner_id=user.id)
 
 
 @router.post(
@@ -46,6 +63,7 @@ async def chat(body: ChatRequest, user: CurrentUserDep, db: DbDep):
         model=body.model,
         api_key=body.api_key,
         base_url=body.base_url,
+        image_ids=body.image_ids,
     )
 
 
@@ -72,6 +90,7 @@ async def chat_stream(body: ChatRequest, user: CurrentUserDep, db: DbDep):
         model=body.model,
         api_key=body.api_key,
         base_url=body.base_url,
+        image_ids=body.image_ids,
     )
     return StreamingResponse(
         stream,
