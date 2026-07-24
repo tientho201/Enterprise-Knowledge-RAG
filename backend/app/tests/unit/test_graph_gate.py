@@ -86,6 +86,20 @@ async def test_free_user_graph_overview_blocked_403(isolated_app_client):
 
 
 @pytest.mark.asyncio
+async def test_free_user_graph_highlight_blocked_403(isolated_app_client):
+    """Gate router-level áp cho mọi route graph, gồm POST /highlight (Endpoint B)."""
+    client, session_factory = isolated_app_client
+    _, token = await _create_user(session_factory, role=UserRole.viewer, plan=UserPlan.free)
+
+    resp = await client.post(
+        "/api/v1/graph/highlight",
+        json={"conversationId": "any-id", "query": "thử"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_pro_user_graph_overview_allowed(isolated_app_client):
     client, session_factory = isolated_app_client
     user_id, token = await _create_user(session_factory, role=UserRole.viewer, plan=UserPlan.pro)

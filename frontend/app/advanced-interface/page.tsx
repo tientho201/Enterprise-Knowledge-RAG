@@ -14,6 +14,8 @@ import {
   Boxes,
   Info,
   Check,
+  Search,
+  X,
 } from "lucide-react"
 import { useApp } from "@/lib/context"
 import { graphAPI, ApiError, type GraphOverview } from "@/lib/api"
@@ -83,6 +85,10 @@ export default function AdvancedInterface() {
   const [expandingId, setExpandingId] = useState<string | null>(null)
   // Tài liệu bị ẩn khỏi đồ thị (client-side, KHÔNG refetch) — checkbox chọn nội dung.
   const [hiddenDocIds, setHiddenDocIds] = useState<Set<string>>(new Set())
+  // Highlight theo truy vấn (Endpoint B) — null = không có, Set = id node trúng.
+  const [queryText, setQueryText] = useState("")
+  const [highlightedIds, setHighlightedIds] = useState<Set<string> | null>(null)
+  const [highlighting, setHighlighting] = useState(false)
 
   const canUse = !!user?.canUseAdvancedSearch
 
@@ -92,6 +98,8 @@ export default function AdvancedInterface() {
     setSelectedNode(null)
     setExpandedDocs(new Map())
     setHiddenDocIds(new Set())
+    setQueryText("")
+    setHighlightedIds(null)
     try {
       const data: GraphOverview = await graphAPI.overview(conversationId)
       setGraph({
@@ -227,6 +235,30 @@ export default function AdvancedInterface() {
     [docChecklist]
   )
 
+  // ── Truy vấn → highlight (Endpoint B) — chỉ đổi trạng thái visual graph có sẵn ──
+  const runHighlight = useCallback(async () => {
+    const q = queryText.trim()
+    if (!q) {
+      setHighlightedIds(null)
+      return
+    }
+    if (!convId) return
+    setHighlighting(true)
+    try {
+      const { nodeIds } = await graphAPI.highlight(convId, q)
+      setHighlightedIds(new Set(nodeIds))
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "Không chạy được truy vấn.")
+    } finally {
+      setHighlighting(false)
+    }
+  }, [queryText, convId])
+
+  const clearHighlight = useCallback(() => {
+    setQueryText("")
+    setHighlightedIds(null)
+  }, [])
+
   // ── Gate UI ───────────────────────────────────────────────────────────────
   if (!canUse) {
     return (
@@ -287,6 +319,48 @@ export default function AdvancedInterface() {
         </div>
       </PageHeader>
 
+      {/* Thanh truy vấn — làm nổi bật nội dung liên quan (Endpoint B) */}
+      <div className="px-4 py-2 border-b border-white/[0.04] bg-[#0a0a0a]/40 flex items-center gap-2 shrink-0">
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-3.5 h-3.5 text-neutral-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={queryText}
+            onChange={(e) => setQueryText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && runHighlight()}
+            placeholder="Làm nổi bật nội dung liên quan tới truy vấn..."
+            disabled={!convId}
+            className="w-full bg-[#0f0f0f]/70 border border-white/[0.06] rounded-lg pl-8 pr-8 py-1.5 text-[12px] text-neutral-200 focus:outline-none focus:border-emerald-500/25 placeholder:text-neutral-600 disabled:opacity-40"
+          />
+          {(queryText || highlightedIds) && (
+            <button
+              onClick={clearHighlight}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-neutral-500 hover:text-neutral-300"
+              title="Xóa highlight"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+        <button
+          onClick={runHighlight}
+          disabled={!convId || highlighting || !queryText.trim()}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/80 hover:bg-emerald-500 text-white text-[12px] font-medium transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {highlighting ? (
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Search className="w-3.5 h-3.5" />
+          )}
+          Làm nổi bật
+        </button>
+        {highlightedIds && (
+          <span className="text-[11px] text-neutral-500 hidden sm:block">
+            {highlightedIds.size} node trúng
+          </span>
+        )}
+      </div>
+
       <div className="flex-1 flex overflow-hidden relative">
         {/* ── Canvas đồ thị ─────────────────────────────────────────────── */}
         <div className="flex-1 relative min-w-0">
@@ -310,6 +384,7 @@ export default function AdvancedInterface() {
               nodes={visibleGraph.nodes}
               links={visibleGraph.links}
               expandedIds={expandedIds}
+              highlightedIds={highlightedIds}
               selectedId={selectedNode?.id ?? null}
               onNodeClick={handleNodeClick}
             />

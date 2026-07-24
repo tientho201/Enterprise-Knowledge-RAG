@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.dependencies import CurrentUserDep, DbDep
 from app.core.plan_gate import require_advanced_access
-from app.schemas.graph import GraphExpandResponse, GraphOverviewResponse
+from app.schemas.graph import (
+    GraphExpandResponse,
+    GraphHighlightRequest,
+    GraphHighlightResponse,
+    GraphOverviewResponse,
+)
 from app.services.graph_service import GraphService
 
 router = APIRouter(
@@ -39,3 +44,9 @@ async def expand(
 ):
     """Endpoint A — bung 1 tài liệu → chunk của nó (lazy, trần GRAPH_MAX_NODES node)."""
     return await GraphService(db).expand(user, conversation_id, document_id)
+
+
+@router.post("/highlight", response_model=GraphHighlightResponse)
+async def highlight(body: GraphHighlightRequest, user: CurrentUserDep, db: DbDep):
+    """Endpoint B — CHỈ trả ID node trúng truy vấn (client tự đổi màu/opacity, không reload)."""
+    return await GraphService(db).highlight(user, body.conversation_id, body.query)

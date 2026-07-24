@@ -605,6 +605,17 @@ export const graphAPI = {
     const res = await apiFetch(`/api/v1/graph/expand?${params}`);
     return handleResponse<GraphExpand>(res);
   },
+
+  // Endpoint B — CHỈ trả ID node trúng truy vấn (dense search). KHÔNG trả lại graph:
+  // client dùng danh sách này đổi màu/opacity đồ thị có sẵn (animation, không reload).
+  async highlight(conversationId: string, query: string): Promise<{ nodeIds: string[] }> {
+    const res = await apiFetch("/api/v1/graph/highlight", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId, query }),
+    });
+    return handleResponse<{ nodeIds: string[] }>(res);
+  },
 };
 
 // ============================================================

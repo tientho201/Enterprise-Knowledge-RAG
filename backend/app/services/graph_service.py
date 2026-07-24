@@ -70,3 +70,18 @@ class GraphService:
         return await asyncio.to_thread(
             graph_queries.fetch_expand, document_id, owner_id, settings.GRAPH_MAX_NODES
         )
+
+    async def highlight(self, user: User, conversation_id: str, query: str) -> dict:
+        """Endpoint B — ID node trúng truy vấn (dense search scoped theo hội thoại+owner).
+
+        CHỈ trả node_ids; client đổi trạng thái visual của graph có sẵn (không nạp lại).
+        """
+        owner_id = self._owner_id(user)
+        document_ids = await self._scoped_document_ids(user, conversation_id)
+        return await asyncio.to_thread(
+            graph_queries.fetch_highlight_ids,
+            document_ids,
+            owner_id,
+            query,
+            settings.DENSE_TOP_K,
+        )

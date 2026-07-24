@@ -58,6 +58,10 @@ export default function ForceGraphView({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
+  // Opacity hiện tại của từng node/cạnh — ease dần về target mỗi frame (autoPauseRedraw
+  // false ⇒ vẽ liên tục) để highlight/dim mượt, không nhảy đột ngột.
+  const nodeAlpha = useRef<Map<string, number>>(new Map())
+  const linkAlpha = useRef<Map<string, number>>(new Map())
 
   useEffect(() => {
     const el = containerRef.current
@@ -79,8 +83,11 @@ export default function ForceGraphView({
     (node: FGNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const isDoc = node.type === "document"
       const r = isDoc ? 6 : 3.5
-      const dimmed = isDimmed(node.id)
-      ctx.globalAlpha = dimmed ? 0.12 : 1
+      const target = isDimmed(node.id) ? 0.12 : 1
+      const cur = nodeAlpha.current.get(node.id) ?? target
+      const alpha = cur + (target - cur) * 0.18 // ease
+      nodeAlpha.current.set(node.id, alpha)
+      ctx.globalAlpha = alpha
 
       ctx.beginPath()
       ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI)
@@ -108,7 +115,7 @@ export default function ForceGraphView({
       ctx.font = `${fontSize}px Inter, system-ui, sans-serif`
       ctx.textAlign = "center"
       ctx.textBaseline = "top"
-      ctx.fillStyle = dimmed ? "rgba(212,212,212,0.2)" : "#d4d4d4"
+      ctx.fillStyle = "#d4d4d4" // độ mờ do globalAlpha (eased) quản lý
       const text = node.label.length > 30 ? node.label.slice(0, 28) + "…" : node.label
       ctx.fillText(text, node.x!, node.y! + r + 1)
       ctx.globalAlpha = 1
@@ -129,13 +136,17 @@ export default function ForceGraphView({
 
   const linkColor = useCallback(
     (link: FGLink) => {
-      if (hasHighlight) {
-        const lit =
-          highlightedIds!.has(linkEndId(link.source)) &&
-          highlightedIds!.has(linkEndId(link.target))
-        return lit ? "rgba(52,211,153,0.55)" : "rgba(140,140,140,0.05)"
-      }
-      return "rgba(140,140,140,0.22)"
+      const s = linkEndId(link.source)
+      const t = linkEndId(link.target)
+      const lit = hasHighlight && highlightedIds!.has(s) && highlightedIds!.has(t)
+      // Cạnh sáng khi cả 2 đầu trúng (client tự suy — endpoint B chỉ trả node id).
+      const target = hasHighlight ? (lit ? 0.55 : 0.04) : 0.22
+      const key = `${s}|${t}`
+      const cur = linkAlpha.current.get(key) ?? target
+      const alpha = cur + (target - cur) * 0.18
+      linkAlpha.current.set(key, alpha)
+      const rgb = lit ? "52,211,153" : "140,140,140"
+      return `rgba(${rgb},${alpha.toFixed(3)})`
     },
     [hasHighlight, highlightedIds]
   )

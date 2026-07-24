@@ -195,3 +195,40 @@ def fetch_expand(document_id: str, owner_id: str | None, limit: int) -> dict[str
         "total": total,
         "returned": returned,
     }
+
+
+def fetch_highlight_ids(
+    document_ids: list[str], owner_id: str | None, query: str, limit: int
+) -> dict[str, Any]:
+    """
+    Endpoint B — ID node "trúng" truy vấn (KHÔNG trả lại graph).
+
+    Dùng DENSE search (vector store), KHÔNG đụng Neo4j: embed truy vấn rồi lấy top chunk
+    tương đồng, scoped theo document_ids + owner_id (tái dùng `HybridRetriever._dense_search`
+    → cùng owner filter/data isolation với /chat). Trả về chunk_id trúng + document_id chứa
+    chúng (để node tài liệu sáng kể cả khi chưa bung). Client đổi màu/opacity graph có sẵn;
+    cạnh sáng (2 đầu đều trúng) client tự suy.
+
+    Returns {"node_ids": [...]} (chunk_id + document_id, đã khử trùng lặp, giữ thứ tự điểm).
+    """
+    if not document_ids or not query.strip():
+        return {"node_ids": []}
+
+    try:
+        from app.ingestion.embedder import get_embedder
+        from app.rag.retriever import HybridRetriever
+
+        embedding = get_embedder().embed_query(query)
+        hits = HybridRetriever(dense_top_k=limit)._dense_search(embedding, document_ids, owner_id)
+    except Exception:
+        logger.exception("Highlight dense search failed — trả rỗng (graceful)")
+        return {"node_ids": []}
+
+    node_ids: list[str] = []
+    seen: set[str] = set()
+    for h in hits:
+        for nid in (h.chunk_id, h.document_id):
+            if nid and nid not in seen:
+                seen.add(nid)
+                node_ids.append(nid)
+    return {"node_ids": node_ids}
