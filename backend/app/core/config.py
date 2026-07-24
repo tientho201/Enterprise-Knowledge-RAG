@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -63,7 +63,14 @@ class Settings(BaseSettings):
     # Local: docker-compose up neo4j
     # Cloud: https://neo4j.com/cloud/aura-free
     NEO4J_URI: str = "bolt://localhost:7687"
-    NEO4J_USER: str = "neo4j"
+    # File credentials Aura tải về dùng key `NEO4J_USERNAME` (KHÔNG phải `NEO4J_USER`),
+    # và username = <instance-id> chứ không phải "neo4j". Chấp nhận cả 2 tên biến để
+    # dán thẳng file Aura vào .env là chạy — nếu chỉ đọc NEO4J_USER thì NEO4J_USERNAME
+    # bị bỏ qua, rơi về mặc định "neo4j" → AuthError.
+    NEO4J_USER: str = Field(
+        default="neo4j",
+        validation_alias=AliasChoices("NEO4J_USER", "NEO4J_USERNAME"),
+    )
     NEO4J_PASSWORD: str = "neo4j"
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
