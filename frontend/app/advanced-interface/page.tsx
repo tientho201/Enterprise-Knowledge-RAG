@@ -17,6 +17,17 @@ import {
 import { useApp } from "@/lib/context"
 import { graphAPI, ApiError, type GraphOverview } from "@/lib/api"
 import type { FGNode, FGLink } from "@/components/ForceGraphView"
+
+// Suy id đầu mút của link (react-force-graph thay string bằng object node sau mô phỏng).
+function linkEndId(end: string | FGNode): string {
+  return typeof end === "object" ? end.id : end
+}
+
+interface ExpandInfo {
+  truncated: boolean
+  total: number
+  returned: number
+}
 import UpgradeModal from "@/components/UpgradeModal"
 
 // react-force-graph dùng canvas/window → phải tắt SSR.
@@ -51,14 +62,14 @@ export default function AdvancedInterface() {
     () => chatSessions.filter((s) => !s.id.startsWith("new-")),
     [chatSessions]
   )
-  const [convId, setConvId] = useState<string>("")
-
-  useEffect(() => {
-    if (convId && savedSessions.some((s) => s.id === convId)) return
-    const preferred =
-      savedSessions.find((s) => s.id === activeSessionId)?.id || savedSessions[0]?.id || ""
-    setConvId(preferred)
-  }, [savedSessions, activeSessionId, convId])
+  // pickedConvId = lựa chọn tường minh của user ở dropdown; convId = giá trị hiệu lực
+  // (derived, không dùng effect để tránh cascading render) — mặc định về hội thoại đang
+  // mở, rồi tới hội thoại đã lưu đầu tiên.
+  const [pickedConvId, setPickedConvId] = useState<string | null>(null)
+  const convId = useMemo(() => {
+    if (pickedConvId && savedSessions.some((s) => s.id === pickedConvId)) return pickedConvId
+    return savedSessions.find((s) => s.id === activeSessionId)?.id || savedSessions[0]?.id || ""
+  }, [pickedConvId, savedSessions, activeSessionId])
 
   // ── State đồ thị (cấu trúc — nạp 1 lần / mỗi lần đổi hội thoại) ────────────
   const [graph, setGraph] = useState<GraphData | null>(null)
@@ -66,6 +77,9 @@ export default function AdvancedInterface() {
   const [error, setError] = useState<string | null>(null)
   const [selectedNode, setSelectedNode] = useState<FGNode | null>(null)
   const [showDetail, setShowDetail] = useState(true)
+  // Tài liệu đang bung → thông tin cắt (nếu có). expandingId: đang gọi expand.
+  const [expandedDocs, setExpandedDocs] = useState<Map<string, ExpandInfo>>(new Map())
+  const [expandingId, setExpandingId] = useState<string | null>(null)
 
   const canUse = !!user?.canUseAdvancedSearch
 
@@ -73,6 +87,7 @@ export default function AdvancedInterface() {
     setLoading(true)
     setError(null)
     setSelectedNode(null)
+    setExpandedDocs(new Map())
     try {
       const data: GraphOverview = await graphAPI.overview(conversationId)
       setGraph({
@@ -89,12 +104,89 @@ export default function AdvancedInterface() {
   }, [])
 
   useEffect(() => {
-    if (!canUse || !convId) {
-      setGraph(null)
-      return
-    }
-    loadOverview(convId)
+    // Fetch-on-dependency-change hợp lệ: nạp lại đồ thị mỗi khi đổi hội thoại. loadOverview
+    // set loading=true đồng bộ (spinner) — chấp nhận 1 lần render thừa, đúng pattern data-fetch
+    // effect của repo (xem context.tsx). Quy tắc set-state-in-effect quá gắt cho case này.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (canUse && convId) loadOverview(convId)
   }, [canUse, convId, loadOverview])
+
+  // ── Bung / thu 1 tài liệu (lazy, thêm/bớt vài chục node — không nạp lại graph) ──
+  const toggleExpand = useCallback(
+    async (docId: string) => {
+      if (expandedDocs.has(docId)) {
+        // Thu: bỏ chunk node của tài liệu này + link liên quan.
+        setGraph((prev) => {
+          if (!prev) return prev
+          const nodes = prev.nodes.filter((n) => !(n.type === "chunk" && n.group === docId))
+          const kept = new Set(nodes.map((n) => n.id))
+          const links = prev.links.filter(
+            (l) => kept.has(linkEndId(l.source)) && kept.has(linkEndId(l.target))
+          )
+          return { nodes, links }
+        })
+        setExpandedDocs((prev) => {
+          const next = new Map(prev)
+          next.delete(docId)
+          return next
+        })
+        return
+      }
+
+      if (!convId) return
+      setExpandingId(docId)
+      try {
+        const data = await graphAPI.expand(docId, convId)
+        setGraph((prev) => {
+          const base = prev ?? { nodes: [], links: [] }
+          const existing = new Set(base.nodes.map((n) => n.id))
+          const newNodes = data.nodes.filter((n) => !existing.has(n.id)).map((n) => ({ ...n }))
+          // Cạnh chứa (tài liệu → chunk) dựng ở client để chunk bám vào node tài liệu.
+          const containment: FGLink[] = data.nodes.map((n) => ({
+            source: docId,
+            target: n.id,
+            rel: "CONTAINS",
+          }))
+          const intra: FGLink[] = data.edges.map((e) => ({
+            source: e.source,
+            target: e.target,
+            rel: e.rel,
+          }))
+          return {
+            nodes: [...base.nodes, ...newNodes],
+            links: [...base.links, ...containment, ...intra],
+          }
+        })
+        setExpandedDocs((prev) =>
+          new Map(prev).set(docId, {
+            truncated: data.truncated,
+            total: data.total,
+            returned: data.returned,
+          })
+        )
+      } catch (err) {
+        setError(err instanceof ApiError ? err.detail : "Không bung được tài liệu.")
+      } finally {
+        setExpandingId(null)
+      }
+    },
+    [convId, expandedDocs]
+  )
+
+  const handleNodeClick = useCallback(
+    (node: FGNode) => {
+      setSelectedNode(node)
+      setShowDetail(true)
+      if (node.type === "document") toggleExpand(node.id)
+    },
+    [toggleExpand]
+  )
+
+  const expandedIds = useMemo(() => new Set(expandedDocs.keys()), [expandedDocs])
+  const truncatedDocs = useMemo(
+    () => Array.from(expandedDocs.values()).filter((i) => i.truncated),
+    [expandedDocs]
+  )
 
   // ── Gate UI ───────────────────────────────────────────────────────────────
   if (!canUse) {
@@ -135,7 +227,7 @@ export default function AdvancedInterface() {
           <label className="text-[11px] text-neutral-500 hidden sm:block">Hội thoại:</label>
           <select
             value={convId}
-            onChange={(e) => setConvId(e.target.value)}
+            onChange={(e) => setPickedConvId(e.target.value)}
             className="bg-[#0f0f0f]/70 border border-white/[0.06] rounded-lg px-2.5 py-1.5 text-[12px] text-neutral-200 focus:outline-none focus:border-emerald-500/25 max-w-[240px]"
           >
             {savedSessions.length === 0 && <option value="">— Chưa có hội thoại đã lưu —</option>}
@@ -178,11 +270,9 @@ export default function AdvancedInterface() {
             <ForceGraphView
               nodes={graph.nodes}
               links={graph.links}
+              expandedIds={expandedIds}
               selectedId={selectedNode?.id ?? null}
-              onNodeClick={(n) => {
-                setSelectedNode(n)
-                setShowDetail(true)
-              }}
+              onNodeClick={handleNodeClick}
             />
           ) : (
             <EmptyState
@@ -192,10 +282,30 @@ export default function AdvancedInterface() {
           )}
 
           {/* Chú thích: giai đoạn Chunk không có cạnh giữa các tài liệu */}
-          {graph && graph.nodes.length > 0 && graph.links.length === 0 && (
+          {graph && graph.nodes.length > 0 && expandedDocs.size === 0 && (
             <div className="absolute bottom-3 left-3 max-w-[320px] text-[10px] text-neutral-500 bg-[#0f0f0f]/80 border border-white/[0.06] rounded-lg px-2.5 py-1.5 leading-relaxed">
-              Mỗi node là một tài liệu. Chưa hiển thị cạnh viện dẫn giữa các tài liệu ở giai
-              đoạn này — bấm vào một tài liệu để xem chi tiết.
+              Mỗi node là một tài liệu. Bấm vào một tài liệu để bung các đoạn nội dung bên
+              trong; bấm lại để thu gọn.
+            </div>
+          )}
+
+          {/* Đang bung 1 tài liệu */}
+          {expandingId && (
+            <div className="absolute bottom-3 left-3 flex items-center gap-2 text-[10px] text-neutral-400 bg-[#0f0f0f]/80 border border-white/[0.06] rounded-lg px-2.5 py-1.5">
+              <RefreshCw className="w-3 h-3 animate-spin text-emerald-400/60" />
+              Đang bung tài liệu...
+            </div>
+          )}
+
+          {/* Cảnh báo bị cắt do trần cứng backend */}
+          {truncatedDocs.length > 0 && (
+            <div className="absolute top-3 left-3 max-w-[340px] flex items-start gap-2 text-[10px] text-amber-300/90 bg-amber-500/[0.06] border border-amber-500/20 rounded-lg px-2.5 py-1.5 leading-relaxed">
+              <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400/80" />
+              <span>
+                Một số tài liệu quá lớn nên chỉ hiển thị{" "}
+                {truncatedDocs.map((d) => `${d.returned}/${d.total}`).join(", ")} đoạn. Bỏ bớt
+                tài liệu hoặc thu gọn để đồ thị nhẹ hơn.
+              </span>
             </div>
           )}
 
@@ -286,6 +396,7 @@ function EmptyState({ icon, text }: { icon: React.ReactNode; text: string }) {
 function NodeDetail({ node }: { node: FGNode }) {
   const isDoc = node.type === "document"
   const chunkCount = typeof node.meta?.chunk_count === "number" ? node.meta.chunk_count : null
+  const content = typeof node.meta?.content === "string" ? node.meta.content : null
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -301,9 +412,19 @@ function NodeDetail({ node }: { node: FGNode }) {
       <div className="text-[13px] font-semibold text-neutral-200 leading-snug break-words">
         {node.label}
       </div>
-      {chunkCount !== null && (
+      {isDoc && chunkCount !== null && (
         <div className="text-[11px] text-neutral-500">
-          {chunkCount} đoạn nội dung được lập chỉ mục.
+          {chunkCount} đoạn nội dung được lập chỉ mục. Bấm node để bung/thu.
+        </div>
+      )}
+      {content && (
+        <div className="pt-2 border-t border-white/[0.05]">
+          <div className="text-[10px] uppercase tracking-wider text-neutral-600 font-semibold mb-1.5">
+            Nguyên văn
+          </div>
+          <p className="text-[12px] text-neutral-300 leading-relaxed whitespace-pre-wrap select-text">
+            {content}
+          </p>
         </div>
       )}
     </div>

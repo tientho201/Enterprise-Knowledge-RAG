@@ -5,7 +5,7 @@
 // autoPauseRedraw=false → canvas vẽ liên tục ⇒ đổi highlight/opacity mượt, không cần
 // reheat simulation (không làm node nhảy khi highlight theo truy vấn).
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ForceGraph2D from "react-force-graph-2d"
 
 export interface FGNode {
@@ -30,6 +30,8 @@ interface Props {
   links: FGLink[]
   // Khi có tập highlight (kết quả truy vấn): node trong tập → sáng, ngoài tập → dim.
   highlightedIds?: Set<string> | null
+  // Node tài liệu đang bung — vẽ vòng ngoài làm dấu hiệu (bấm lại để thu).
+  expandedIds?: Set<string> | null
   selectedId?: string | null
   onNodeClick?: (node: FGNode) => void
 }
@@ -48,6 +50,7 @@ export default function ForceGraphView({
   nodes,
   links,
   highlightedIds,
+  expandedIds,
   selectedId,
   onNodeClick,
 }: Props) {
@@ -84,7 +87,18 @@ export default function ForceGraphView({
       ctx.fillStyle = TYPE_COLOR[node.type] || "#a3a3a3"
       ctx.fill()
 
+      // Vòng ngoài: tài liệu đang bung (dấu hiệu bấm lại để thu).
+      if (expandedIds?.has(node.id)) {
+        ctx.beginPath()
+        ctx.arc(node.x!, node.y!, r + 3, 0, 2 * Math.PI)
+        ctx.lineWidth = 1 / globalScale
+        ctx.strokeStyle = "rgba(52,211,153,0.5)"
+        ctx.stroke()
+      }
+
       if (node.id === selectedId) {
+        ctx.beginPath()
+        ctx.arc(node.x!, node.y!, r + 1.5, 0, 2 * Math.PI)
         ctx.lineWidth = 2 / globalScale
         ctx.strokeStyle = "#ffffff"
         ctx.stroke()
@@ -99,7 +113,7 @@ export default function ForceGraphView({
       ctx.fillText(text, node.x!, node.y! + r + 1)
       ctx.globalAlpha = 1
     },
-    [isDimmed, selectedId]
+    [isDimmed, selectedId, expandedIds]
   )
 
   const paintPointerArea = useCallback(
@@ -126,6 +140,22 @@ export default function ForceGraphView({
     [hasHighlight, highlightedIds]
   )
 
+  // Định danh graphData chỉ đổi khi CẤU TRÚC đổi (nạp overview / bung / thu) — KHÔNG
+  // đổi khi highlight, nên highlight không reheat mô phỏng (node không nhảy). Node
+  // giữ nguyên object ref → giữ vị trí x/y qua các lần bung. Link truyền bản sao id
+  // chuỗi để react-force-graph tự mutate bản sao, không làm hỏng state canonical.
+  const graphData = useMemo(
+    () => ({
+      nodes,
+      links: links.map((l) => ({
+        source: linkEndId(l.source),
+        target: linkEndId(l.target),
+        rel: l.rel,
+      })),
+    }),
+    [nodes, links]
+  )
+
   return (
     <div ref={containerRef} className="w-full h-full">
       {size.w > 0 && (
@@ -133,7 +163,7 @@ export default function ForceGraphView({
           ref={fgRef}
           width={size.w}
           height={size.h}
-          graphData={{ nodes, links }}
+          graphData={graphData}
           backgroundColor="rgba(0,0,0,0)"
           nodeRelSize={5}
           nodeCanvasObject={paintNode}

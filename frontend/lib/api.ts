@@ -577,6 +577,16 @@ export interface GraphOverview {
   edges: GraphEdge[];
 }
 
+export interface GraphExpand {
+  documentId: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  // Trần cứng backend (GRAPH_MAX_NODES). truncated=true → hiển thị returned/total.
+  truncated: boolean;
+  total: number;
+  returned: number;
+}
+
 export const graphAPI = {
   // Endpoint A — cấu trúc cấp tài liệu cho 1 hội thoại. Backend tự lấy document_ids
   // (owner-scoped) từ conversation_id; client KHÔNG gửi Cypher/tham số nhạy cảm.
@@ -584,6 +594,16 @@ export const graphAPI = {
     const params = new URLSearchParams({ conversation_id: conversationId });
     const res = await apiFetch(`/api/v1/graph/overview?${params}`);
     return handleResponse<GraphOverview>(res);
+  },
+
+  // Endpoint A — bung 1 tài liệu → chunk của nó (lazy, gọi khi user bấm node tài liệu).
+  async expand(documentId: string, conversationId: string): Promise<GraphExpand> {
+    const params = new URLSearchParams({
+      conversation_id: conversationId,
+      document_id: documentId,
+    });
+    const res = await apiFetch(`/api/v1/graph/expand?${params}`);
+    return handleResponse<GraphExpand>(res);
   },
 };
 

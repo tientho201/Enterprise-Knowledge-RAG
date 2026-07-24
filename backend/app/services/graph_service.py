@@ -17,6 +17,7 @@ import asyncio
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.user import User, UserRole
 from app.rag import graph_queries
 from app.repositories.conversation_repo import ConversationRepository
@@ -52,3 +53,20 @@ class GraphService:
         owner_id = self._owner_id(user)
         document_ids = await self._scoped_document_ids(user, conversation_id)
         return await asyncio.to_thread(graph_queries.fetch_overview, document_ids, owner_id)
+
+    async def expand(self, user: User, conversation_id: str, document_id: str) -> dict:
+        """Endpoint A — bung 1 tài liệu → chunk của nó (trần GRAPH_MAX_NODES).
+
+        Chặn bung tài liệu KHÔNG thuộc phạm vi hội thoại/owner của user → 404, tránh
+        dùng conversation hợp lệ làm bàn đạp đọc chunk của tài liệu người khác.
+        """
+        owner_id = self._owner_id(user)
+        document_ids = await self._scoped_document_ids(user, conversation_id)
+        if document_id not in document_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tài liệu không thuộc hội thoại này.",
+            )
+        return await asyncio.to_thread(
+            graph_queries.fetch_expand, document_id, owner_id, settings.GRAPH_MAX_NODES
+        )
