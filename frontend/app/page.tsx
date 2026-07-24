@@ -743,7 +743,7 @@ export default function Page() {
                     <Plus className="w-4 h-4" />
                   </button>
 
-                  <button
+                  {/* <button
                     onClick={() => {
                       setShowRightPanel(true)
                       setRightPanelTab("docs")
@@ -752,7 +752,7 @@ export default function Page() {
                     title="Upload / Chọn tài liệu"
                   >
                     <Paperclip className="w-4 h-4" />
-                  </button>
+                  </button> */}
 
                   <button
                     onClick={() => imageInputRef.current?.click()}
