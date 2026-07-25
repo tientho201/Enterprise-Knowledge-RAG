@@ -373,3 +373,81 @@ def test_external_placeholder_does_not_overwrite_real_provision_ingested_later(
         ).single()
     assert record["ph"] is False, "node thật KHÔNG được đè lại thành placeholder"
     assert record["content"] == "Nội dung Điều 5 thật"
+
+
+def test_real_provision_ingested_first_is_not_downgraded_by_later_placeholder_attempt(
+    neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
+):
+    """Thứ tự NGƯỢC với test phía trên: B được ingest THẬT trước, rồi mới có 1 văn
+    bản khác viện dẫn ngoại tới B (B đã tồn tại thật). ON CREATE SET trong
+    index_external_placeholders_to_graph không chạy khi node đã tồn tại — bất kể
+    thứ tự nào (backfill hội tụ đối xứng, không phụ thuộc ai ingest trước)."""
+    target_addr = f"owner_{owner_id}:88/2019/NĐ-CP:DIEU_5"
+
+    # (1) B ingest thật TRƯỚC — chưa ai viện dẫn tới B.
+    index_provisions_to_graph(
+        driver=neo4j_driver,
+        owner_id=owner_id,
+        document_code="88/2019/NĐ-CP",
+        provisions=[ProvisionRecord(dieu=5, khoan=None, diem=None, content="Nội dung Điều 5 thật")],
+        chunk_links=[],
+        citations=[],
+    )
+
+    # (2) Văn bản khác viện dẫn ngoại tới B SAU — MERGE trúng node thật đã có.
+    index_external_placeholders_to_graph(
+        driver=neo4j_driver,
+        owner_id=owner_id,
+        own_document_code="99/2024/NĐ-CP",
+        citations=[((1, 1, None), "88/2019/NĐ-CP", 5, None, None)],
+    )
+
+    with neo4j_driver.session() as session:
+        record = session.run(
+            "MATCH (p:Provision {legal_address: $addr}) RETURN p.is_placeholder AS ph, "
+            "p.content AS content",
+            addr=target_addr,
+        ).single()
+    assert record["ph"] is False, "node thật ingest trước KHÔNG được biến thành placeholder"
+    assert record["content"] == "Nội dung Điều 5 thật"
+
+
+def test_backfill_flow_placeholder_then_real_ingest_twice_is_idempotent(
+    neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
+):
+    """Luồng backfill đầy đủ theo đúng mô tả phase 3: (1) văn bản A viện dẫn B
+    (B chưa ingest) -> placeholder. (2) B được ingest thật -> placeholder lấp đầy
+    (content xuất hiện, is_placeholder=false). (3) Ingest lại B thật LẦN NỮA
+    (retry/reindex) -> hội tụ về cùng 1 node, không tạo trùng, không mất content."""
+    _index_external_sample(neo4j_driver, owner_id)  # (1) A cites B -> placeholder
+
+    target_addr = f"owner_{owner_id}:88/2019/NĐ-CP:DIEU_5"
+
+    def _ingest_b_real() -> None:
+        index_provisions_to_graph(
+            driver=neo4j_driver,
+            owner_id=owner_id,
+            document_code="88/2019/NĐ-CP",
+            provisions=[
+                ProvisionRecord(dieu=5, khoan=None, diem=None, content="Nội dung Điều 5 thật")
+            ],
+            chunk_links=[],
+            citations=[],
+        )
+
+    _ingest_b_real()  # (2) B ingest thật lần 1 — backfill
+    _ingest_b_real()  # (3) B ingest thật lần 2 — idempotent
+
+    with neo4j_driver.session() as session:
+        record = session.run(
+            "MATCH (p:Provision {legal_address: $addr}) RETURN p.is_placeholder AS ph, "
+            "p.content AS content",
+            addr=target_addr,
+        ).single()
+        n_nodes = session.run(
+            "MATCH (p:Provision {legal_address: $addr}) RETURN count(p) AS n", addr=target_addr
+        ).single()["n"]
+
+    assert record["ph"] is False
+    assert record["content"] == "Nội dung Điều 5 thật"
+    assert n_nodes == 1, "backfill lặp lại không được tạo trùng node"
