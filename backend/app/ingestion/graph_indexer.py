@@ -204,6 +204,28 @@ class ProvisionRecord:
     content: str
 
 
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+def normalize_document_code(document_code: str) -> str:
+    """
+    Chuẩn hoá TỐI THIỂU mã văn bản trước khi dùng làm khoá MERGE (legal_address/
+    document_address, xem build_legal_address/build_document_address): trim, gộp
+    khoảng trắng thừa, viết hoa hậu tố loại văn bản.
+
+    Cố tình KHÔNG làm gì hơn (không bỏ dấu, không suy alias "NĐ" <-> "Nghị định",
+    không canonical table/LLM normalization) — dữ liệu thật phase 2 (9/9 mã văn bản
+    đã ở dạng chuẩn nhất quán, vì _DOC_TYPE_CODE/_DOC_OWN_NUMBER_PATTERN trong
+    structural_parser.py vốn đã tách sẵn phần "số" và tên loại văn bản ra khỏi mã
+    trước khi capture) chưa cho thấy cần xử lý mạnh hơn. Xem
+    measure_document_code_normalization_stats() để ĐO (không xử lý) nếu dữ liệu
+    lớn hơn sau này cho thấy khác.
+
+    Idempotent: normalize_document_code(normalize_document_code(x)) == normalize_document_code(x).
+    """
+    return _WHITESPACE_PATTERN.sub("", document_code.strip()).upper()
+
+
 def build_legal_address(
     owner_id: str | None,
     document_code: str,
@@ -215,6 +237,9 @@ def build_legal_address(
     Địa chỉ pháp lý tất định — cùng (owner_id, document_code, dieu, khoan, diem)
     luôn ra cùng chuỗi, qua mọi lần ingest/reindex (giống chunk_id ở ingestion.py).
 
+    document_code đi qua normalize_document_code() trước khi ghép — 2 lần gọi với
+    document_code chỉ khác khoảng trắng/hoa-thường phải hội tụ về cùng 1 địa chỉ.
+
     TODO (kho tài liệu chung — chưa build, chỉ ghi chỗ đặt): khi có kho văn bản quy
     phạm pháp luật công khai (do admin kiểm duyệt), namespace "owner_{owner_id}"
     sẽ cần thêm 1 nhánh "public:{document_code}:DIEU_{n}..." song song (không thay
@@ -223,7 +248,7 @@ def build_legal_address(
     (index_provisions_to_graph, ingestion.py) truyền is_public dựa trên nguồn tài
     liệu; retriever traverse filter theo (owner_id = $owner OR is_public = true).
     """
-    parts = [f"owner_{owner_id}", document_code, f"DIEU_{dieu}"]
+    parts = [f"owner_{owner_id}", normalize_document_code(document_code), f"DIEU_{dieu}"]
     if khoan is not None:
         parts.append(f"KHOAN_{khoan}")
         if diem is not None:
@@ -260,6 +285,8 @@ def index_provisions_to_graph(
     """
     if not provisions:
         return
+
+    document_code = normalize_document_code(document_code)
 
     def addr(key: tuple[int, int | None, str | None]) -> str:
         dieu, khoan, diem = key
@@ -372,6 +399,8 @@ def index_external_placeholders_to_graph(
     if not citations:
         return
 
+    own_document_code = normalize_document_code(own_document_code)
+
     def target_addr(doc_code: str, dieu: int, khoan: int | None, diem: str | None) -> str:
         return build_legal_address(owner_id, doc_code, dieu, khoan, diem)
 
@@ -383,6 +412,7 @@ def index_external_placeholders_to_graph(
     edge_params: list[dict] = []
 
     for source_key, doc_code, dieu, khoan, diem in citations:
+        doc_code = normalize_document_code(doc_code)
         addr = target_addr(doc_code, dieu, khoan, diem)
         placeholder_by_addr[addr] = {
             "legal_address": addr,
@@ -472,11 +502,11 @@ def build_document_address(owner_id: str | None, document_code: str) -> str:
     """
     Địa chỉ cấp VĂN BẢN (không có DIEU/KHOAN) — khoá MERGE của node LegalDocument,
     xem index_legal_document_to_graph/index_document_placeholders_to_graph bên dưới.
-    Cùng namespace owner_{owner_id} như build_legal_address, để 1 văn bản luôn có
-    ĐÚNG 1 LegalDocument node dù được nhắc tới ở cấp Điều (Provision) hay cấp văn
-    bản (LegalDocument).
+    Cùng namespace owner_{owner_id} và cùng chuẩn hoá document_code như
+    build_legal_address, để 1 văn bản luôn có ĐÚNG 1 LegalDocument node dù được
+    nhắc tới ở cấp Điều (Provision) hay cấp văn bản (LegalDocument).
     """
-    return f"owner_{owner_id}:{document_code}"
+    return f"owner_{owner_id}:{normalize_document_code(document_code)}"
 
 
 def index_legal_document_to_graph(
@@ -495,6 +525,7 @@ def index_legal_document_to_graph(
     node thật từ lần ingest trước (retry/reindex) — content (name) luôn được cập
     nhật theo lần ingest mới nhất, is_placeholder luôn về false.
     """
+    document_code = normalize_document_code(document_code)
     addr = build_document_address(owner_id, document_code)
     with driver.session() as session:
         session.run(
@@ -536,6 +567,7 @@ def index_document_placeholders_to_graph(
     if not citations:
         return
 
+    own_document_code = normalize_document_code(own_document_code)
     own_addr = build_document_address(owner_id, own_document_code)
 
     placeholder_by_addr: dict[str, dict] = {}
@@ -543,6 +575,7 @@ def index_document_placeholders_to_graph(
     edges_from_own_doc: list[dict] = []
 
     for source_key, doc_code in citations:
+        doc_code = normalize_document_code(doc_code)
         target_addr = build_document_address(owner_id, doc_code)
         placeholder_by_addr[target_addr] = {
             "legal_address": target_addr,
@@ -602,3 +635,76 @@ def index_document_placeholders_to_graph(
         len(edges_from_provision),
         len(edges_from_own_doc),
     )
+
+
+# ── Chuẩn hoá — đo lường (Phase 3, mục 3) ────────────────────────────────────
+
+
+def measure_document_code_normalization_stats(
+    driver: Driver, owner_id: str | None = None
+) -> dict[str, int]:
+    """
+    ĐO (KHÔNG xử lý) — phục vụ quyết định phase sau có cần chuẩn hoá alias mạnh
+    hơn (canonical table/LLM normalization) hay không, dựa trên dữ liệu thật thay
+    vì phỏng đoán (xem lý do đổi hướng phase 3 ở đầu module ingestion.py/task).
+
+    Không phải hook tự động chạy mỗi lần ingest (quét toàn bộ document_code trong
+    graph — tốn theo kích thước graph, không nên chạy trên hot path của từng lần
+    ingest 1 document). Gọi thủ công/định kỳ (script vận hành, hoặc lần verify) khi
+    cần con số.
+
+    Returns:
+      placeholder_provisions:   số Provision node placeholder hiện có.
+      placeholder_documents:    số LegalDocument node placeholder hiện có.
+      distinct_document_codes:  số document_code (đã qua normalize_document_code)
+                                 phân biệt trong graph (Provision + LegalDocument).
+      near_duplicate_pairs:     số cặp document_code KHÁC NHAU sau chuẩn hoá tối
+                                 thiểu hiện tại NHƯNG TRÙNG NHAU nếu bỏ hết ký tự
+                                 không phải chữ/số (ứng viên "cùng 1 văn bản viết
+                                 khác nhau" mà chuẩn hoá tối thiểu chưa gộp được).
+                                 Không tự gộp gì — chỉ đếm.
+    """
+    owner_filter = "AND n.owner_id = $owner_id" if owner_id is not None else ""
+    with driver.session() as session:
+        n_ph_prov_row = session.run(
+            f"MATCH (n:Provision {{is_placeholder: true}}) WHERE true {owner_filter} "
+            "RETURN count(n) AS n",
+            owner_id=owner_id,
+        ).single()
+        n_ph_prov = n_ph_prov_row["n"] if n_ph_prov_row else 0
+        n_ph_doc_row = session.run(
+            f"MATCH (n:LegalDocument {{is_placeholder: true}}) WHERE true {owner_filter} "
+            "RETURN count(n) AS n",
+            owner_id=owner_id,
+        ).single()
+        n_ph_doc = n_ph_doc_row["n"] if n_ph_doc_row else 0
+        codes = [
+            r["code"]
+            for r in session.run(
+                f"""
+                MATCH (n)
+                WHERE (n:Provision OR n:LegalDocument) {owner_filter}
+                RETURN DISTINCT n.document_code AS code
+                """,
+                owner_id=owner_id,
+            )
+            if r["code"] is not None
+        ]
+
+    def _loose_key(code: str) -> str:
+        return re.sub(r"[^0-9A-ZĐ]", "", code.upper())
+
+    loose_groups: dict[str, list[str]] = {}
+    for code in codes:
+        loose_groups.setdefault(_loose_key(code), []).append(code)
+
+    near_duplicate_pairs = sum(len(group) - 1 for group in loose_groups.values() if len(group) > 1)
+
+    stats = {
+        "placeholder_provisions": n_ph_prov,
+        "placeholder_documents": n_ph_doc,
+        "distinct_document_codes": len(codes),
+        "near_duplicate_pairs": near_duplicate_pairs,
+    }
+    logger.info("Citation normalization stats: %s", stats)
+    return stats

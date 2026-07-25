@@ -33,6 +33,7 @@ from app.ingestion.graph_indexer import (
     index_external_placeholders_to_graph,
     index_legal_document_to_graph,
     index_provisions_to_graph,
+    measure_document_code_normalization_stats,
 )
 from app.ingestion.structural_parser import (
     ParsedCitation,
@@ -645,3 +646,18 @@ def test_legal_document_address_unique_constraint_exists(neo4j_driver: Driver):
         constraints = list(session.run("SHOW CONSTRAINTS YIELD name RETURN name"))
     names = {row["name"] for row in constraints}
     assert "legal_document_address_unique" in names
+
+
+def test_measure_document_code_normalization_stats_counts_placeholders(
+    neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
+):
+    _index_external_sample(neo4j_driver, owner_id)  # 1 placeholder Provision (88/2019/NĐ-CP)
+    _index_doc_level_sample(neo4j_driver, owner_id)  # 2 placeholder LegalDocument
+
+    stats = measure_document_code_normalization_stats(neo4j_driver, owner_id=owner_id)
+
+    assert stats["placeholder_provisions"] == 1
+    assert stats["placeholder_documents"] == 2
+    assert stats["distinct_document_codes"] >= 3
+    # Dữ liệu test dùng mã văn bản đã ở dạng chuẩn — không kỳ vọng cặp gần giống.
+    assert stats["near_duplicate_pairs"] == 0

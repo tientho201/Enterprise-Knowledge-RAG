@@ -11,6 +11,7 @@ from app.ingestion.graph_indexer import (
     build_legal_address,
     index_document_placeholders_to_graph,
     index_external_placeholders_to_graph,
+    normalize_document_code,
 )
 
 
@@ -33,7 +34,7 @@ def test_build_legal_address_diem_without_khoan_is_ignored():
     nhánh diem nằm lồng trong nhánh if khoan is not None) — diem đứng một mình
     không có nghĩa hợp lệ trong lược đồ Điều/Khoản/Điểm."""
     addr = build_legal_address("u1", "code", 5, khoan=None, diem="a")
-    assert addr == "owner_u1:code:DIEU_5"
+    assert addr == "owner_u1:CODE:DIEU_5"
 
 
 def test_build_legal_address_deterministic_across_calls():
@@ -44,7 +45,35 @@ def test_build_legal_address_deterministic_across_calls():
 def test_build_legal_address_none_owner_id():
     # owner_id=None có nghĩa riêng ("admin/không filter") ở các nơi khác trong
     # codebase — build_legal_address không được phép coi None là lỗi.
-    assert build_legal_address(None, "code", 1) == "owner_None:code:DIEU_1"
+    assert build_legal_address(None, "code", 1) == "owner_None:CODE:DIEU_1"
+
+
+def test_build_legal_address_normalizes_document_code():
+    """Chuẩn hoá tối thiểu (phase 3): khoảng trắng thừa + hoa/thường không được
+    tạo ra 2 địa chỉ khác nhau cho cùng 1 văn bản."""
+    addr = build_legal_address("u1", "  99/2024/nđ-cp ", 5)
+    assert addr == "owner_u1:99/2024/NĐ-CP:DIEU_5"
+    assert addr == build_legal_address("u1", "99/2024/NĐ-CP", 5)
+
+
+# ── normalize_document_code ───────────────────────────────────────────────────
+
+
+def test_normalize_document_code_trims_and_uppercases():
+    assert normalize_document_code("  99/2024/nđ-cp ") == "99/2024/NĐ-CP"
+
+
+def test_normalize_document_code_collapses_internal_whitespace():
+    assert normalize_document_code("99 /2024/ NĐ-CP") == "99/2024/NĐ-CP"
+
+
+def test_normalize_document_code_idempotent():
+    once = normalize_document_code("  99/2024/nđ-cp ")
+    assert normalize_document_code(once) == once
+
+
+def test_normalize_document_code_already_clean_is_unchanged():
+    assert normalize_document_code("99/2024/NĐ-CP") == "99/2024/NĐ-CP"
 
 
 # ── build_document_address ────────────────────────────────────────────────────
@@ -54,8 +83,13 @@ def test_build_document_address_basic():
     assert build_document_address("u1", "99/2024/NĐ-CP") == "owner_u1:99/2024/NĐ-CP"
 
 
+def test_build_document_address_normalizes_document_code():
+    addr = build_document_address("u1", "  99/2024/nđ-cp ")
+    assert addr == "owner_u1:99/2024/NĐ-CP"
+
+
 def test_build_document_address_none_owner_id():
-    assert build_document_address(None, "code") == "owner_None:code"
+    assert build_document_address(None, "code") == "owner_None:CODE"
 
 
 def test_build_document_address_has_no_dieu_segment():

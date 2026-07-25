@@ -13,6 +13,7 @@ import pytest
 
 from app.ingestion.citation_llm_fallback import (
     ImplicitCitationResolution,
+    _dieu_looks_like_misread_khoan,
     classify_implicit_resolutions,
     resolve_implicit_citations,
 )
@@ -156,6 +157,26 @@ async def test_resolve_implicit_citations_llm_call_exception_falls_back_safely()
     ]
 
 
+# ── _dieu_looks_like_misread_khoan ────────────────────────────────────────────
+
+
+def test_dieu_looks_like_misread_khoan_true_case_thật_phase_2():
+    assert _dieu_looks_like_misread_khoan("theo khoản 16 Điều này", dieu=16) is True
+
+
+def test_dieu_looks_like_misread_khoan_false_when_dieu_explicit():
+    """"khoản 5 Điều 5" — số trùng nhưng Điều 5 được nêu tường minh -> hợp lệ."""
+    assert _dieu_looks_like_misread_khoan("theo khoản 5 Điều 5", dieu=5) is False
+
+
+def test_dieu_looks_like_misread_khoan_false_when_number_not_a_khoan():
+    assert _dieu_looks_like_misread_khoan("theo Điều 16 của văn bản", dieu=16) is False
+
+
+def test_dieu_looks_like_misread_khoan_false_when_no_numbers_match():
+    assert _dieu_looks_like_misread_khoan("theo quy định pháp luật hiện hành", dieu=3) is False
+
+
 # ── classify_implicit_resolutions ─────────────────────────────────────────────
 
 _PROVISIONS = [
@@ -261,6 +282,51 @@ def test_classify_implicit_resolutions_self_reference_is_unresolved():
     )
     assert (internal, external) == ([], [])
     assert unresolved == ["câu tự trỏ"]
+
+
+def test_classify_implicit_resolutions_rejects_dieu_confused_with_khoan_number():
+    """Case thật phase 2: câu "...khoản 16 Điều này" khiến LLM trả dieu=16 (nhầm
+    số khoản thành số điều — "Điều này" không nêu số cụ thể). Phase 3: phải bị
+    loại (unresolved), KHÔNG được tạo cạnh nội bộ."""
+    candidates = [_candidate("theo khoản 16 Điều này", char_start=20)]  # trong Điều 1 Khoản 1
+    resolutions = [ImplicitCitationResolution(True, None, 16, None, None)]
+
+    internal, external, unresolved = classify_implicit_resolutions(
+        _PROVISIONS, own_document_code="99/2024/NĐ-CP", candidates=candidates, resolutions=resolutions
+    )
+    assert internal == []
+    assert external == []
+    assert unresolved == ["theo khoản 16 Điều này"]
+
+
+def test_classify_implicit_resolutions_rejects_dieu_confused_with_khoan_number_external():
+    """Cùng dấu hiệu hallucination nhưng ở nhánh external (document_code khác) —
+    validation phải chạy TRƯỚC khi phân nhánh internal/external, không riêng gì
+    internal."""
+    candidates = [_candidate("theo khoản 16 văn bản nêu trên", char_start=20)]
+    resolutions = [ImplicitCitationResolution(True, "88/2019/NĐ-CP", 16, None, None)]
+
+    internal, external, unresolved = classify_implicit_resolutions(
+        _PROVISIONS, own_document_code="99/2024/NĐ-CP", candidates=candidates, resolutions=resolutions
+    )
+    assert internal == []
+    assert external == []
+    assert unresolved == ["theo khoản 16 văn bản nêu trên"]
+
+
+def test_classify_implicit_resolutions_allows_same_number_for_dieu_and_khoan_when_explicit():
+    """"khoản 5 Điều 5" — cùng số 5 xuất hiện cạnh cả "khoản" lẫn "Điều" là HỢP LỆ
+    (câu nêu tường minh "Điều 5"), không phải hallucination. Validation không được
+    false-positive loại bỏ ca này."""
+    candidates = [_candidate("theo khoản 5 Điều 5 của văn bản nêu trên", char_start=20)]
+    resolutions = [ImplicitCitationResolution(True, None, 5, None, None)]  # trỏ Điều 5 (tồn tại)
+
+    internal, external, unresolved = classify_implicit_resolutions(
+        _PROVISIONS, own_document_code="99/2024/NĐ-CP", candidates=candidates, resolutions=resolutions
+    )
+    assert len(internal) == 1
+    assert internal[0].target == ProvisionKey(dieu=5)
+    assert unresolved == []
 
 
 def test_classify_implicit_resolutions_mismatched_lengths_raises():

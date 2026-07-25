@@ -10,14 +10,18 @@ Batch TOÀN BỘ câu nghi ngờ của 1 document vào 1 LLM call DUY NHẤT (kh
 lúc ingest (ingestion.py), KHÔNG chạy lúc query. Ngưỡng cắt số câu nghi ngờ/document
 nằm ở find_implicit_citation_sentences(max_sentences=...), không phải ở module này.
 
-Giới hạn đã biết (để phase 3 xử lý dựa trên dữ liệu thật): LLM có thể trả về
-document_code/dieu không chính xác (hallucination) — chưa có bước xác thực chéo.
-Để giảm rủi ro bịa số, prompt yêu cầu rõ: chỉ trích xuất khi số hiệu THỰC SỰ xuất
-hiện trong câu; nếu không xác định được Điều cụ thể thì trả dieu=null (không đoán).
+Xác thực chéo (phase 3): dữ liệu thật phase 2 phát hiện 1 dạng hallucination cụ
+thể — câu viện dẫn dồn dập nhiều số ("...khoản 16 Điều này") khiến LLM lẫn số
+khoản thành số điều (trả dieu=16 dù "16" thật ra là số khoản, "Điều này" không nêu
+số cụ thể). classify_implicit_resolutions() phát hiện case này bằng
+_dieu_looks_like_misread_khoan() và loại bỏ (chuyển thành unresolved) — ưu tiên AN
+TOÀN: thà bỏ 1 viện dẫn ngầm không chắc còn hơn tạo cạnh sai (domain pháp lý, cạnh
+sai nguy hiểm hơn thiếu cạnh).
 """
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 from app.ingestion.structural_parser import (
@@ -58,6 +62,27 @@ class ImplicitCitationResolution:
     dieu: int | None
     khoan: int | None
     diem: str | None
+
+
+_KHOAN_NUMBER_PATTERN = re.compile(r"[Kk]hoản\s+(\d+)")
+_DIEU_NUMBER_PATTERN = re.compile(r"[Đđ]iều\s+(\d+)")
+
+
+def _dieu_looks_like_misread_khoan(sentence: str, dieu: int) -> bool:
+    """
+    Phát hiện ca hallucination thật gặp ở phase 2: câu viện dẫn dồn dập nhiều số
+    (vd "...khoản 16 Điều này") khiến LLM lẫn số khoản thành số điều.
+
+    Dấu hiệu: *dieu* LLM trả về khớp 1 số xuất hiện ngay sau "khoản" trong câu,
+    NHƯNG câu không có "Điều <dieu>" tường minh để xác nhận — nếu có (vd "khoản 5
+    Điều 5", cùng số cho cả khoản lẫn điều là hợp lệ, không phải hallucination),
+    không coi là nghi ngờ.
+    """
+    khoan_numbers = {int(m.group(1)) for m in _KHOAN_NUMBER_PATTERN.finditer(sentence)}
+    if dieu not in khoan_numbers:
+        return False
+    dieu_numbers = {int(m.group(1)) for m in _DIEU_NUMBER_PATTERN.finditer(sentence)}
+    return dieu not in dieu_numbers
 
 
 def _strip_code_fence(raw: str) -> str:
@@ -159,8 +184,10 @@ def classify_implicit_resolutions(
       - external: document_code KHÁC own_document_code VÀ có dieu -> ứng viên
         placeholder (giống C2, nhánh có Điều cụ thể).
       - unresolved: is_citation=false, hoặc thiếu dieu, hoặc không định vị được
-        Provision nguồn chứa câu đó -> không tạo gì, chỉ trả về câu gốc để log/báo
-        cáo (phục vụ yêu cầu "câu viện dẫn ngầm nào LLM fallback bắt được/bỏ sót").
+        Provision nguồn chứa câu đó, hoặc dieu bị nghi ngờ là số khoản bị LLM lẫn
+        thành số điều (_dieu_looks_like_misread_khoan, phase 3 — xác thực chéo
+        chống hallucination) -> không tạo gì, chỉ trả về câu gốc để log/báo cáo
+        (phục vụ yêu cầu "câu viện dẫn ngầm nào LLM fallback bắt được/bỏ sót").
 
     len(candidates) phải bằng len(resolutions) — cùng đến từ 1 cặp gọi
     find_implicit_citation_sentences() / resolve_implicit_citations() không lọc gì
@@ -179,6 +206,19 @@ def classify_implicit_resolutions(
 
     for candidate, res in zip(candidates, resolutions):
         if not res.is_citation or res.dieu is None:
+            unresolved.append(candidate.sentence)
+            continue
+
+        if _dieu_looks_like_misread_khoan(candidate.sentence, res.dieu):
+            logger.warning(
+                "LLM implicit-citation fallback: nghi ngờ nhầm số khoản thành điều "
+                "(dieu=%d cũng xuất hiện dưới dạng 'khoản %d' trong câu, không có "
+                "'Điều %d' tường minh) — bỏ qua câu: %r",
+                res.dieu,
+                res.dieu,
+                res.dieu,
+                candidate.sentence,
+            )
             unresolved.append(candidate.sentence)
             continue
 
