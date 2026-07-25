@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 200
 
+    # ── Citation graph / Provision layer (phase 2 — viện dẫn ngoại + LLM fallback) ─
+    # Trần cứng số câu "viện dẫn ngầm" (không match được C1/C2 bằng regex) đưa vào
+    # 1 LLM call/document — văn bản dài bất thường không được đội chi phí LLM
+    # không kiểm soát. Xem structural_parser.find_implicit_citation_sentences.
+    IMPLICIT_CITATION_MAX_SENTENCES: int = 30
+
     # ── Retrieval ─────────────────────────────────────────────────────────────
     DENSE_TOP_K: int = 20
     GRAPH_TOP_K: int = 20

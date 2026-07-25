@@ -210,25 +210,72 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                         "Neo4j indexing skipped for document %s: %s", document_id, graph_exc
                     )
 
-                # 10b. Provision layer (citation graph — Phase 1: viện dẫn nội bộ,
-                # chưa placeholder/viện dẫn ngoại). Best-effort RIÊNG với bước 10:
-                # lỗi ở đây không được kéo sập Chunk-graph đã chạy ổn ở trên.
+                # 10b. Provision layer (citation graph): viện dẫn nội bộ (C1, phase 1)
+                # + viện dẫn ngoại/placeholder + LLM fallback viện dẫn ngầm (C2 +
+                # phase 2). Best-effort RIÊNG với bước 10: lỗi ở đây không được kéo
+                # sập Chunk-graph đã chạy ổn ở trên.
                 try:
+                    from app.ingestion.citation_llm_fallback import (
+                        classify_implicit_resolutions,
+                        resolve_implicit_citations,
+                    )
                     from app.ingestion.graph_indexer import (
                         ProvisionRecord,
+                        index_external_placeholders_to_graph,
                         index_provisions_to_graph,
                     )
                     from app.ingestion.structural_parser import (
                         extract_citations,
                         extract_document_code,
+                        extract_external_citations,
+                        find_implicit_citation_sentences,
                         parse_provisions,
                     )
+                    from app.llm.factory import get_llm
                     from app.rag.graph_client import get_neo4j_driver
 
                     provisions = parse_provisions(text)
                     if provisions:
                         document_code = extract_document_code(text) or f"internal:{document_id}"
                         citation_records = extract_citations(text, provisions)
+
+                        # ── Phase 2: viện dẫn ngoại (C2) + fallback LLM cho viện dẫn
+                        # ngầm. implicit_* được GỘP vào citation_records/
+                        # external_citations TRƯỚC khi build citation_pairs bên dưới,
+                        # để dùng lại nguyên luồng index_provisions_to_graph hiện có.
+                        external_citations = extract_external_citations(
+                            text, provisions, document_code
+                        )
+
+                        implicit_candidates = find_implicit_citation_sentences(
+                            text, max_sentences=settings.IMPLICIT_CITATION_MAX_SENTENCES
+                        )
+                        implicit_unresolved: list[str] = []
+                        if implicit_candidates:
+                            resolutions = await resolve_implicit_citations(
+                                get_llm(), [c.sentence for c in implicit_candidates]
+                            )
+                            (
+                                implicit_internal,
+                                implicit_external,
+                                implicit_unresolved,
+                            ) = classify_implicit_resolutions(
+                                provisions=provisions,
+                                own_document_code=document_code,
+                                candidates=implicit_candidates,
+                                resolutions=resolutions,
+                            )
+                            citation_records = citation_records + implicit_internal
+                            external_citations = external_citations + implicit_external
+                            logger.debug(
+                                "LLM implicit-citation fallback: document %s — %d ứng viên, "
+                                "%d resolve nội bộ, %d resolve ngoại, %d không resolve được",
+                                document_id,
+                                len(implicit_candidates),
+                                len(implicit_internal),
+                                len(implicit_external),
+                                len(implicit_unresolved),
+                            )
 
                         provision_records = [
                             ProvisionRecord(
@@ -280,6 +327,44 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                             len(citation_pairs),
                             document_id,
                             document_code,
+                        )
+
+                        # Chỉ viện dẫn ngoại CÓ Điều cụ thể mới đủ để tạo placeholder
+                        # Provision (xem structural_parser.extract_external_citations —
+                        # dieu=None là giới hạn phase 2 đã chốt, không bịa Điều).
+                        resolvable_external = [
+                            (
+                                (c.source.dieu, c.source.khoan, c.source.diem)
+                                if c.source
+                                else None,
+                                c.document_code,
+                                c.dieu,
+                                c.khoan,
+                                c.diem,
+                            )
+                            for c in external_citations
+                            if c.dieu is not None
+                        ]
+                        doc_level_only_count = sum(
+                            1 for c in external_citations if c.dieu is None
+                        )
+
+                        if resolvable_external:
+                            index_external_placeholders_to_graph(
+                                driver=get_neo4j_driver(),
+                                owner_id=doc.owner_id,
+                                own_document_code=document_code,
+                                citations=resolvable_external,
+                            )
+
+                        logger.debug(
+                            "Neo4j external citations for document %s: %d placeholder-eligible, "
+                            "%d chỉ có mã văn bản (giới hạn phase 2, không tạo placeholder), "
+                            "%d câu viện dẫn ngầm không resolve được",
+                            document_id,
+                            len(resolvable_external),
+                            doc_level_only_count,
+                            len(implicit_unresolved),
                         )
                     else:
                         logger.debug(

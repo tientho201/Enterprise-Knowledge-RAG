@@ -129,13 +129,13 @@ jobs:
           path: backend/reports/
 
   # ─────────────────────────────────────────────
-  # JOB 3: Integration tests — auth flow (PostgreSQL + Redis)
-  # Redis cần từ khi auth/register có luồng OTP (lưu mã ở Redis + dispatch Celery
-  # task gửi email qua broker Redis). Qdrant/Neo4j/LocalStack vẫn CHƯA cần: thêm
-  # lại khi có integration test ingestion/retrieval thực tế.
+  # JOB 3: Integration tests — auth flow (PostgreSQL + Redis) + Provision layer
+  # citation graph (Neo4j service — app/tests/integration/test_provision_graph.py,
+  # marker @pytest.mark.neo4j). Qdrant/LocalStack vẫn CHƯA cần: thêm lại khi có
+  # integration test ingestion/retrieval qua Qdrant/S3 thực tế.
   # ─────────────────────────────────────────────
   test-integration:
-    name: Integration tests (auth)
+    name: Integration tests (auth + provision graph)
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 15
@@ -163,6 +163,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      neo4j:
+        # Cùng tag major version với Neo4j local (backend/docker-compose.yml:
+        # neo4j:5-community). Neo4j Aura (production) là managed service, version
+        # cụ thể không lộ qua connection string nên không thể khớp tuyệt đối — rủi ro
+        # thấp vì schema dùng ở đây (CREATE CONSTRAINT ... IF NOT EXISTS, MERGE) là
+        # cú pháp ổn định xuyên suốt Neo4j 5.x, không dùng cú pháp/APOC đặc thù version.
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/neo4j_password
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p neo4j_password 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
       APP_ENV: test
@@ -175,7 +191,16 @@ jobs:
       QDRANT_URL: "http://localhost:6333"
       QDRANT_API_KEY: "test-key"
       NEO4J_URI: "bolt://localhost:7687"
-      NEO4J_PASSWORD: "test"
+      NEO4J_PASSWORD: "neo4j_password"
+      # Đọc riêng bởi app/tests/integration/test_provision_graph.py — CỐ TÌNH tách
+      # khỏi NEO4J_URI/NEO4J_PASSWORD ở trên (dùng bởi settings.NEO4J_URI qua
+      # get_neo4j_driver()). Test Provision layer tự tạo driver riêng từ 3 biến này
+      # thay vì đọc settings, để không bao giờ vô tình nối vào Neo4j Aura production
+      # dù ai đó sau này đổi NEO4J_URI ở trên trỏ ra ngoài CI. Ở đây cả hai cặp cùng
+      # trỏ service container neo4j bên trên — CI không bao giờ ghi vào Aura production.
+      NEO4J_TEST_URI: "bolt://localhost:7687"
+      NEO4J_TEST_USER: "neo4j"
+      NEO4J_TEST_PASSWORD: "neo4j_password"
       AWS_ACCESS_KEY_ID: "test"
       AWS_SECRET_ACCESS_KEY: "test"
 

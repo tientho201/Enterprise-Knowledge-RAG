@@ -329,3 +329,104 @@ def index_provisions_to_graph(
         len(chunk_links),
         len(citations),
     )
+
+
+# ── Provision layer — Phase 2: placeholder cho viện dẫn NGOẠI ───────────────
+#
+# Viện dẫn trỏ tới Provision của văn bản CHƯA được ingest -> tạo trước 1 node
+# Provision "rỗng" (is_placeholder=true, content=null) tại đúng legal_address mà
+# văn bản đó SẼ có nếu/khi được ingest thật (owner_{owner_id}:{document_code}:
+# DIEU_n[:KHOAN_m[:DIEM_x]]). Khi văn bản đích thật sự được ingest sau này,
+# index_provisions_to_graph() MERGE theo đúng legal_address đó và ghi đè content +
+# is_placeholder=false — hội tụ tự nhiên, không cần bước "lấp đầy" placeholder
+# riêng (đó là phase 3, dựa trên dữ liệu thật thu được ở đây).
+#
+# Placeholder KHÔNG được tạo cho viện dẫn chỉ có mã văn bản mà không kèm Điều cụ
+# thể (target_dieu=None) — caller (ingestion.py) phải tự lọc trước khi gọi hàm
+# này; xem structural_parser.extract_external_citations.
+
+
+def index_external_placeholders_to_graph(
+    driver: Driver,
+    owner_id: str | None,
+    own_document_code: str,
+    citations: list[
+        tuple[tuple[int, int | None, str | None] | None, str, int, int | None, str | None]
+    ],
+) -> None:
+    """
+    Upsert placeholder Provision node cho từng đích viện dẫn ngoại + cạnh VIEN_DAN
+    từ Provision nguồn (trong văn bản đang ingest, *own_document_code*) tới đích đó.
+
+    citations: [(source_key, target_document_code, target_dieu, target_khoan,
+                 target_diem), ...] — source_key=None nếu câu viện dẫn không nằm
+    trong Provision nào đã parse được (không tạo cạnh, chỉ tạo node placeholder).
+
+    Idempotent — MERGE theo legal_address. Dùng `ON CREATE SET` (không phải SET
+    thường như index_provisions_to_graph) để KHÔNG BAO GIỜ đè lên 1 Provision đã
+    tồn tại — dù là node thật (văn bản đích đã ingest trước đó, is_placeholder=
+    false) hay placeholder đã có từ 1 viện dẫn khác trỏ tới cùng địa chỉ (MERGE
+    theo legal_address thay vì CREATE, đúng yêu cầu "trùng địa chỉ thì gộp, không
+    nhân đôi").
+    """
+    if not citations:
+        return
+
+    def target_addr(doc_code: str, dieu: int, khoan: int | None, diem: str | None) -> str:
+        return build_legal_address(owner_id, doc_code, dieu, khoan, diem)
+
+    def source_addr(key: tuple[int, int | None, str | None]) -> str:
+        dieu, khoan, diem = key
+        return build_legal_address(owner_id, own_document_code, dieu, khoan, diem)
+
+    placeholder_by_addr: dict[str, dict] = {}
+    edge_params: list[dict] = []
+
+    for source_key, doc_code, dieu, khoan, diem in citations:
+        addr = target_addr(doc_code, dieu, khoan, diem)
+        placeholder_by_addr[addr] = {
+            "legal_address": addr,
+            "owner_id": owner_id,
+            "document_code": doc_code,
+            "dieu": dieu,
+            "khoan": khoan,
+            "diem": diem,
+        }
+        if source_key is not None:
+            edge_params.append({"from_addr": source_addr(source_key), "to_addr": addr})
+
+    with driver.session() as session:
+        session.run(
+            """
+            UNWIND $placeholders AS ph
+            MERGE (p:Provision {legal_address: ph.legal_address})
+            ON CREATE SET
+                p.owner_id       = ph.owner_id,
+                p.document_code  = ph.document_code,
+                p.dieu           = ph.dieu,
+                p.khoan          = ph.khoan,
+                p.diem           = ph.diem,
+                p.content        = null,
+                p.is_placeholder = true
+            """,
+            placeholders=list(placeholder_by_addr.values()),
+        )
+
+    if edge_params:
+        with driver.session() as session:
+            session.run(
+                """
+                UNWIND $edges AS e
+                MATCH (a:Provision {legal_address: e.from_addr})
+                MATCH (b:Provision {legal_address: e.to_addr})
+                MERGE (a)-[:VIEN_DAN]->(b)
+                """,
+                edges=edge_params,
+            )
+
+    logger.info(
+        "Neo4j external placeholders indexed: own_document_code=%s targets=%d edges=%d",
+        own_document_code,
+        len(placeholder_by_addr),
+        len(edge_params),
+    )

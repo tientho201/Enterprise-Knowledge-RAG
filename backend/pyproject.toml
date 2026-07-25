@@ -54,6 +54,9 @@ testpaths = ["app/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "neo4j: cần Neo4j thật đang chạy (vd docker-compose local); tự skip nếu không kết nối được — chạy riêng bằng `pytest -m neo4j`",
+]
 
 [tool.coverage.run]
 source = ["app"]
