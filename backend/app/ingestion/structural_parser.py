@@ -46,9 +46,20 @@ _CITATION_PATTERN = re.compile(
 # Mã văn bản của chính tài liệu đang ingest — chỉ tìm trong phần đầu văn bản
 # (tiêu đề thường nêu ngay đầu), không quét toàn văn bản để tránh nhầm với
 # mã văn bản NGOẠI được viện dẫn ở đâu đó bên trong (đó là việc của phase 2).
+#
+# Giữa từ loại văn bản và "số" cho phép tối đa 40 ký tự mô tả (KHÔNG xuống dòng,
+# KHÔNG chứa chữ số) — phát hiện qua verify phase 3 trên văn bản hợp nhất thật
+# (Luật Thương mại 36/2005/QH11, không có dòng "Số:"): tiêu đề luật thật thường có
+# tên riêng chen giữa, vd "Luật Thương mại số 36/2005/QH11", "Luật Quản lý ngoại
+# thương số 05/2017/QH14" — pattern cũ (không cho phép chen chữ) bỏ qua các match
+# này (do "Thương mại"/"Quản lý ngoại thương" không khớp `\s*(?:số\s*)?`) và ăn
+# nhầm mã của 1 văn bản khác được liệt kê ở "được sửa đổi, bổ sung bởi:" ngay sau
+# đó (vd "Luật số 75/2025/QH15..."). Hậu tố `[A-ZĐ0-9\-]*` cho phép chữ số
+# (khớp _DOC_TYPE_CODE) — thiếu chữ số khiến hậu tố "QH15" bị cắt cụt còn "QH".
 _DOC_CODE_PATTERN = re.compile(
-    r"(?:Nghị định|Thông tư|Luật|Quyết định|Nghị quyết)\s*(?:số\s*)?"
-    r"(\d+/\d{4}(?:/[A-ZĐ][A-ZĐ\-]*)?)"
+    r"(?:Nghị định|Thông tư|Luật|Quyết định|Nghị quyết)"
+    r"\s*(?:[^\d\n]{0,40}?số)?\s*"
+    r"(\d+/\d{4}(?:/[A-ZĐ][A-ZĐ0-9\-]*)?)"
 )
 
 # Dòng "Số:   15/2025/TT-BNV" ở phần thể thức công văn (letterhead) — cách văn bản
@@ -57,7 +68,7 @@ _DOC_CODE_PATTERN = re.compile(
 # Luật...; Căn cứ Nghị định số X...;" TRƯỚC dòng "Số:" — nếu chỉ dò
 # _DOC_CODE_PATTERN (match ĐẦU TIÊN dạng "<loại văn bản> số <mã>") sẽ ăn nhầm mã của
 # văn bản được viện dẫn trong "Căn cứ" thay vì mã của chính văn bản đang ingest.
-_DOC_OWN_NUMBER_PATTERN = re.compile(r"Số\s*:\s*(\d+/\d{4}(?:/[A-ZĐ][A-ZĐ\-]*)?)")
+_DOC_OWN_NUMBER_PATTERN = re.compile(r"Số\s*:\s*(\d+/\d{4}(?:/[A-ZĐ][A-ZĐ0-9\-]*)?)")
 
 # ── C2: câu viện dẫn NGOẠI (trỏ tới văn bản khác, có kèm mã văn bản) ─────────
 # Mã văn bản: "88/2019/NĐ-CP" (Nghị định/Thông tư/Quyết định/Nghị quyết, hậu tố

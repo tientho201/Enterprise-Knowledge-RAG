@@ -112,6 +112,31 @@ def test_extract_document_code_falls_back_to_narrative_form_when_no_so_line():
     assert extract_document_code(text) == "99/2024/NĐ-CP"
 
 
+def test_extract_document_code_handles_descriptive_words_between_type_and_so():
+    """Phát hiện qua verify phase 3 trên văn bản hợp nhất thật (Luật Thương mại
+    36/2005/QH11, không có dòng 'Số:'): tiêu đề có tên riêng chen giữa loại văn
+    bản và "số" ("Luật THƯƠNG MẠI số..."), và văn bản khác được liệt kê ngay sau
+    trong "được sửa đổi, bổ sung bởi:" khớp _DOC_CODE_PATTERN gọn hơn ("Luật số
+    75/2025/QH15..." — không có tên chen giữa). Trước fix, match ĐẦU TIÊN rơi vào
+    văn bản được liệt kê thay vì mã của chính văn bản đang ingest."""
+    text = (
+        "LUẬT\nTHƯƠNG MẠI\n\n"
+        "Luật Thương mại số 36/2005/QH11 ngày 14 tháng 6 năm 2005 của Quốc hội, "
+        "được sửa đổi, bổ sung bởi:\n"
+        "1. Luật số 75/2025/QH15 ngày 16 tháng 6 năm 2025 của Quốc hội.\n\n"
+        "Điều 1. Phạm vi điều chỉnh\n"
+    )
+    assert extract_document_code(text) == "36/2005/QH11"
+
+
+def test_extract_document_code_suffix_with_trailing_digit_not_truncated():
+    """Hậu tố mã văn bản có chữ số ở cuối (vd 'QH15', khoá Quốc hội) không được
+    cắt cụt thành 'QH' — _DOC_CODE_PATTERN trước fix chỉ cho phép chữ cái trong
+    phần lặp lại của hậu tố."""
+    text = "Luật số 75/2025/QH15 ngày 16 tháng 6 năm 2025\n\nĐiều 1. Phạm vi điều chỉnh\n"
+    assert extract_document_code(text) == "75/2025/QH15"
+
+
 def test_extract_citations_resolves_internal_references():
     provisions = parse_provisions(SAMPLE_TEXT)
     citations = extract_citations(SAMPLE_TEXT, provisions)
