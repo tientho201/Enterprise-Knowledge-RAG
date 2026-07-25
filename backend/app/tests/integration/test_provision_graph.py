@@ -28,7 +28,10 @@ from neo4j import Driver, GraphDatabase
 from app.ingestion.chunker import DocumentChunker
 from app.ingestion.graph_indexer import (
     ProvisionRecord,
+    build_document_address,
+    index_document_placeholders_to_graph,
     index_external_placeholders_to_graph,
+    index_legal_document_to_graph,
     index_provisions_to_graph,
 )
 from app.ingestion.structural_parser import (
@@ -89,6 +92,7 @@ def cleanup_provision_graph(neo4j_driver: Driver, owner_id: str) -> Iterator[Non
     yield
     with neo4j_driver.session() as session:
         session.run("MATCH (p:Provision {owner_id: $o}) DETACH DELETE p", o=owner_id)
+        session.run("MATCH (d:LegalDocument {owner_id: $o}) DETACH DELETE d", o=owner_id)
         session.run(
             "MATCH (c:Chunk) WHERE c.chunk_id STARTS WITH $prefix DETACH DELETE c",
             prefix=f"{owner_id}-chunk-",
@@ -451,3 +455,193 @@ def test_backfill_flow_placeholder_then_real_ingest_twice_is_idempotent(
     assert record["ph"] is False
     assert record["content"] == "Nội dung Điều 5 thật"
     assert n_nodes == 1, "backfill lặp lại không được tạo trùng node"
+
+
+# ── Phase 3 — Document-level node (LegalDocument) ────────────────────────────
+
+DOC_LEVEL_SAMPLE_TEXT = """Nghị định số 99/2024/NĐ-CP quy định về bảo vệ dữ liệu cá nhân
+
+Căn cứ Nghị định số 77/2020/NĐ-CP;
+
+Điều 1. Phạm vi điều chỉnh
+1. Việc thực hiện theo quy định tại Nghị định số 88/2019/NĐ-CP.
+"""
+
+
+def _index_doc_level_sample(driver: Driver, owner_id: str) -> str:
+    """Chạy đúng luồng bước 10c của ingest_document (ingestion.py) trên
+    DOC_LEVEL_SAMPLE_TEXT: own LegalDocument (index_legal_document_to_graph) rồi
+    placeholder cho viện dẫn chỉ-có-mã (index_document_placeholders_to_graph).
+    Trả về own_document_code đã dùng."""
+    provisions = parse_provisions(DOC_LEVEL_SAMPLE_TEXT)
+    document_code = extract_document_code(DOC_LEVEL_SAMPLE_TEXT)
+    assert document_code == "99/2024/NĐ-CP"
+
+    provision_records = [
+        ProvisionRecord(dieu=p.key.dieu, khoan=p.key.khoan, diem=p.key.diem, content=p.content)
+        for p in provisions
+    ]
+    index_provisions_to_graph(
+        driver=driver,
+        owner_id=owner_id,
+        document_code=document_code,
+        provisions=provision_records,
+        chunk_links=[],
+        citations=[],
+    )
+
+    index_legal_document_to_graph(
+        driver=driver, owner_id=owner_id, document_code=document_code, name="Nghị định 99/2024"
+    )
+
+    external_citations = extract_external_citations(DOC_LEVEL_SAMPLE_TEXT, provisions, document_code)
+    doc_level_only = [
+        ((c.source.dieu, c.source.khoan, c.source.diem) if c.source else None, c.document_code)
+        for c in external_citations
+        if c.dieu is None
+    ]
+    assert {code for _, code in doc_level_only} == {"77/2020/NĐ-CP", "88/2019/NĐ-CP"}
+
+    index_document_placeholders_to_graph(
+        driver=driver, owner_id=owner_id, own_document_code=document_code, citations=doc_level_only
+    )
+    return document_code
+
+
+def test_document_level_placeholder_created_with_is_placeholder_true(
+    neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
+):
+    _index_doc_level_sample(neo4j_driver, owner_id)
+
+    target_addr = build_document_address(owner_id, "88/2019/NĐ-CP")
+    with neo4j_driver.session() as session:
+        record = session.run(
+            "MATCH (d:LegalDocument {legal_address: $addr}) RETURN d.is_placeholder AS ph, "
+            "d.name AS name, d.owner_id AS owner_id, d.document_code AS document_code",
+            addr=target_addr,
+        ).single()
+
+    assert record is not None, "placeholder LegalDocument không được tạo"
+    assert record["ph"] is True
+    assert record["name"] is None
+    assert record["owner_id"] == owner_id
+    assert record["document_code"] == "88/2019/NĐ-CP"
+
+
+def test_document_level_edge_from_provision_source(
+    neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
+):
+    """"...Nghị định số 88/2019/NĐ-CP" nằm trong Điều 1 Khoản 1 -> cạnh
+    VIEN_DAN_VAN_BAN xuất phát từ chính Provision đó (không phải LegalDocument)."""
+    _index_doc_level_sample(neo4j_driver, owner_id)
+
+    source_addr = f"owner_{owner_id}:99/2024/NĐ-CP:DIEU_1:KHOAN_1"
+    target_addr = build_document_address(owner_id, "88/2019/NĐ-CP")
+    with neo4j_driver.session() as session:
+        record = session.run(
+            "MATCH (p:Provision {legal_address: $src})-[:VIEN_DAN_VAN_BAN]->"
+            "(d:LegalDocument {legal_address: $dst}) RETURN count(*) AS n",
+            src=source_addr,
+            dst=target_addr,
+        ).single()
+    assert record["n"] == 1
+
+
+def test_document_level_edge_from_own_document_when_source_is_preamble(
+    neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
+):
+    """"Căn cứ Nghị định số 77/2020/NĐ-CP" nằm ở phần mở đầu (TRƯỚC Điều 1) —
+    không có Provision nào chứa nó -> cạnh xuất phát từ chính LegalDocument của
+    văn bản đang ingest (99/2024/NĐ-CP), không mất thông tin liên kết."""
+    own_code = _index_doc_level_sample(neo4j_driver, owner_id)
+
+    own_addr = build_document_address(owner_id, own_code)
+    target_addr = build_document_address(owner_id, "77/2020/NĐ-CP")
+    with neo4j_driver.session() as session:
+        record = session.run(
+            "MATCH (s:LegalDocument {legal_address: $src})-[:VIEN_DAN_VAN_BAN]->"
+            "(d:LegalDocument {legal_address: $dst}) RETURN count(*) AS n",
+            src=own_addr,
+            dst=target_addr,
+        ).single()
+    assert record["n"] == 1
+
+
+def test_document_level_own_document_is_real_not_placeholder(
+    neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
+):
+    own_code = _index_doc_level_sample(neo4j_driver, owner_id)
+    own_addr = build_document_address(owner_id, own_code)
+    with neo4j_driver.session() as session:
+        record = session.run(
+            "MATCH (d:LegalDocument {legal_address: $addr}) RETURN d.is_placeholder AS ph, "
+            "d.name AS name",
+            addr=own_addr,
+        ).single()
+    assert record["ph"] is False
+    assert record["name"] == "Nghị định 99/2024"
+
+
+def test_document_level_backfill_when_real_document_ingested_later(
+    neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
+):
+    """Placeholder LegalDocument (88/2019/NĐ-CP) được tạo bởi 1 văn bản khác viện
+    dẫn tới -> khi 88/2019/NĐ-CP thật sự được ingest, index_legal_document_to_graph
+    MERGE trúng đúng node đó và lấp đầy name + is_placeholder=false."""
+    _index_doc_level_sample(neo4j_driver, owner_id)
+    target_addr = build_document_address(owner_id, "88/2019/NĐ-CP")
+
+    index_legal_document_to_graph(
+        driver=neo4j_driver,
+        owner_id=owner_id,
+        document_code="88/2019/NĐ-CP",
+        name="Nghị định 88/2019 thật",
+    )
+
+    with neo4j_driver.session() as session:
+        record = session.run(
+            "MATCH (d:LegalDocument {legal_address: $addr}) RETURN d.is_placeholder AS ph, "
+            "d.name AS name",
+            addr=target_addr,
+        ).single()
+        n_nodes = session.run(
+            "MATCH (d:LegalDocument {legal_address: $addr}) RETURN count(d) AS n", addr=target_addr
+        ).single()["n"]
+
+    assert record["ph"] is False
+    assert record["name"] == "Nghị định 88/2019 thật"
+    assert n_nodes == 1
+
+
+def test_document_level_placeholder_is_idempotent_across_two_runs(
+    neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
+):
+    _index_doc_level_sample(neo4j_driver, owner_id)
+    _index_doc_level_sample(neo4j_driver, owner_id)
+
+    with neo4j_driver.session() as session:
+        n_docs = session.run(
+            "MATCH (d:LegalDocument {owner_id: $o}) RETURN count(d) AS n", o=owner_id
+        ).single()["n"]
+        n_edges = session.run(
+            "MATCH (:LegalDocument {owner_id: $o})-[r:VIEN_DAN_VAN_BAN]->(:LegalDocument) "
+            "RETURN count(r) AS n",
+            o=owner_id,
+        ).single()["n"]
+        n_provision_edges = session.run(
+            "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN_VAN_BAN]->(:LegalDocument) "
+            "RETURN count(r) AS n",
+            o=owner_id,
+        ).single()["n"]
+
+    # 3 LegalDocument: own (99/2024, thật) + 2 placeholder (77/2020, 88/2019).
+    assert n_docs == 3, "MERGE trùng địa chỉ phải gộp, không nhân đôi qua 2 lần chạy"
+    assert n_edges == 1
+    assert n_provision_edges == 1
+
+
+def test_legal_document_address_unique_constraint_exists(neo4j_driver: Driver):
+    with neo4j_driver.session() as session:
+        constraints = list(session.run("SHOW CONSTRAINTS YIELD name RETURN name"))
+    names = {row["name"] for row in constraints}
+    assert "legal_document_address_unique" in names

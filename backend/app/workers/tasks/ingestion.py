@@ -221,7 +221,9 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                     )
                     from app.ingestion.graph_indexer import (
                         ProvisionRecord,
+                        index_document_placeholders_to_graph,
                         index_external_placeholders_to_graph,
+                        index_legal_document_to_graph,
                         index_provisions_to_graph,
                     )
                     from app.ingestion.structural_parser import (
@@ -329,6 +331,20 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                             document_code,
                         )
 
+                        # Document-level node (phase 3) — điểm neo cấp văn bản cho
+                        # chính văn bản đang ingest. Backfill tự nhiên: nếu văn bản
+                        # khác đã viện dẫn tới document_code này trước (placeholder
+                        # LegalDocument), MERGE hội tụ và lấp đầy tại đây. PHẢI chạy
+                        # TRƯỚC index_document_placeholders_to_graph bên dưới (cạnh
+                        # xuất phát từ chính LegalDocument này khi source_key=None
+                        # cần node đã tồn tại để MATCH trúng).
+                        index_legal_document_to_graph(
+                            driver=get_neo4j_driver(),
+                            owner_id=doc.owner_id,
+                            document_code=document_code,
+                            name=doc.name,
+                        )
+
                         # Chỉ viện dẫn ngoại CÓ Điều cụ thể mới đủ để tạo placeholder
                         # Provision (xem structural_parser.extract_external_citations —
                         # dieu=None là giới hạn phase 2 đã chốt, không bịa Điều).
@@ -345,9 +361,19 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                             for c in external_citations
                             if c.dieu is not None
                         ]
-                        doc_level_only_count = sum(
-                            1 for c in external_citations if c.dieu is None
-                        )
+                        # Viện dẫn ngoại CHỈ CÓ mã văn bản (dieu=None) — phase 2 bỏ
+                        # hẳn nhóm này (75% dữ liệu thật); phase 3 dùng LegalDocument
+                        # để không mất liên kết cấp văn bản (xem graph_indexer.py).
+                        doc_level_only = [
+                            (
+                                (c.source.dieu, c.source.khoan, c.source.diem)
+                                if c.source
+                                else None,
+                                c.document_code,
+                            )
+                            for c in external_citations
+                            if c.dieu is None
+                        ]
 
                         if resolvable_external:
                             index_external_placeholders_to_graph(
@@ -357,13 +383,21 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                                 citations=resolvable_external,
                             )
 
+                        if doc_level_only:
+                            index_document_placeholders_to_graph(
+                                driver=get_neo4j_driver(),
+                                owner_id=doc.owner_id,
+                                own_document_code=document_code,
+                                citations=doc_level_only,
+                            )
+
                         logger.debug(
                             "Neo4j external citations for document %s: %d placeholder-eligible, "
-                            "%d chỉ có mã văn bản (giới hạn phase 2, không tạo placeholder), "
+                            "%d chỉ có mã văn bản (LegalDocument, phase 3), "
                             "%d câu viện dẫn ngầm không resolve được",
                             document_id,
                             len(resolvable_external),
-                            doc_level_only_count,
+                            len(doc_level_only),
                             len(implicit_unresolved),
                         )
                     else:

@@ -1,11 +1,17 @@
 """
-graph_indexer.py — phần thuần logic (build_legal_address), không cần Neo4j.
-Test có Neo4j thật cho index_provisions_to_graph()/
-index_external_placeholders_to_graph() (placeholder — phase 2) nằm ở
+graph_indexer.py — phần thuần logic (build_legal_address, build_document_address),
+không cần Neo4j. Test có Neo4j thật cho index_provisions_to_graph()/
+index_external_placeholders_to_graph()/index_legal_document_to_graph()/
+index_document_placeholders_to_graph() nằm ở
 app/tests/integration/test_provision_graph.py (marker @pytest.mark.neo4j).
 """
 
-from app.ingestion.graph_indexer import build_legal_address, index_external_placeholders_to_graph
+from app.ingestion.graph_indexer import (
+    build_document_address,
+    build_legal_address,
+    index_document_placeholders_to_graph,
+    index_external_placeholders_to_graph,
+)
 
 
 def test_build_legal_address_dieu_only():
@@ -41,10 +47,39 @@ def test_build_legal_address_none_owner_id():
     assert build_legal_address(None, "code", 1) == "owner_None:code:DIEU_1"
 
 
+# ── build_document_address ────────────────────────────────────────────────────
+
+
+def test_build_document_address_basic():
+    assert build_document_address("u1", "99/2024/NĐ-CP") == "owner_u1:99/2024/NĐ-CP"
+
+
+def test_build_document_address_none_owner_id():
+    assert build_document_address(None, "code") == "owner_None:code"
+
+
+def test_build_document_address_has_no_dieu_segment():
+    """LegalDocument là điểm neo cấp văn bản — địa chỉ KHÔNG được có DIEU/KHOAN,
+    khác build_legal_address (Provision)."""
+    addr = build_document_address("u1", "99/2024/NĐ-CP")
+    assert "DIEU" not in addr
+    assert addr.count(":") == 1
+
+
 def test_index_external_placeholders_to_graph_empty_citations_is_noop():
     """[] citations -> return sớm, KHÔNG chạm tới driver (an toàn gọi với
     driver=None trong test thuần logic này, không cần Neo4j thật)."""
     index_external_placeholders_to_graph(
+        driver=None,  # type: ignore[arg-type]
+        owner_id="u1",
+        own_document_code="99/2024/NĐ-CP",
+        citations=[],
+    )
+
+
+def test_index_document_placeholders_to_graph_empty_citations_is_noop():
+    """Cùng nguyên tắc — [] citations -> return sớm, không chạm driver."""
+    index_document_placeholders_to_graph(
         driver=None,  # type: ignore[arg-type]
         owner_id="u1",
         own_document_code="99/2024/NĐ-CP",

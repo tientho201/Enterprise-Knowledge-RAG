@@ -430,3 +430,175 @@ def index_external_placeholders_to_graph(
         len(placeholder_by_addr),
         len(edge_params),
     )
+
+
+# ── Document-level layer (Phase 3) ───────────────────────────────────────────
+#
+# Dữ liệu thật phase 2: 75% viện dẫn ngoại chỉ nêu mã văn bản, KHÔNG kèm Điều
+# (structural_parser.extract_external_citations, nhánh dieu=None) — Provision luôn
+# cần dieu nên nhóm này bị bỏ hẳn ở phase 2 (chỉ đếm, không tạo gì). Node
+# LegalDocument là "điểm neo" nhẹ hơn Provision, đủ để giữ liên kết cấp văn bản
+# cho nhóm này, và phục vụ cơ chế GỢI Ý sau này ("tài liệu bạn đọc viện dẫn X —
+# thêm vào thư viện?" — chỉ cần biết mã văn bản, không cần Điều cụ thể).
+#
+# Node
+#   (:LegalDocument {legal_address, owner_id, document_code, name, is_placeholder})
+#
+# Relationships
+#   (:Provision)-[:VIEN_DAN_VAN_BAN]->(:LegalDocument)      — nguồn viện dẫn nằm
+#                                                              trong 1 Provision đã
+#                                                              parse được
+#   (:LegalDocument)-[:VIEN_DAN_VAN_BAN]->(:LegalDocument)  — nguồn viện dẫn KHÔNG
+#                                                              nằm trong Provision
+#                                                              nào (vd phần "Căn
+#                                                              cứ..." mở đầu văn
+#                                                              bản) -> cạnh xuất
+#                                                              phát từ chính
+#                                                              LegalDocument của
+#                                                              văn bản đang ingest,
+#                                                              để không mất thông
+#                                                              tin liên kết.
+#
+# Cùng cơ chế hội tụ MERGE như Provision layer: index_legal_document_to_graph
+# (văn bản THẬT, gọi mỗi lần ingest) dùng SET vô điều kiện — nếu trước đó đã có
+# placeholder tại cùng legal_address (do văn bản khác viện dẫn tới), lần ingest
+# thật này lấp đầy nó (backfill tự nhiên, giống Provision).
+# index_document_placeholders_to_graph (viện dẫn NGOẠI chỉ-có-mã) dùng
+# ON CREATE SET — không bao giờ đè node thật thành placeholder, dù thứ tự ingest
+# là gì.
+
+
+def build_document_address(owner_id: str | None, document_code: str) -> str:
+    """
+    Địa chỉ cấp VĂN BẢN (không có DIEU/KHOAN) — khoá MERGE của node LegalDocument,
+    xem index_legal_document_to_graph/index_document_placeholders_to_graph bên dưới.
+    Cùng namespace owner_{owner_id} như build_legal_address, để 1 văn bản luôn có
+    ĐÚNG 1 LegalDocument node dù được nhắc tới ở cấp Điều (Provision) hay cấp văn
+    bản (LegalDocument).
+    """
+    return f"owner_{owner_id}:{document_code}"
+
+
+def index_legal_document_to_graph(
+    driver: Driver,
+    owner_id: str | None,
+    document_code: str,
+    name: str,
+) -> None:
+    """
+    Upsert LegalDocument node THẬT cho văn bản đang ingest (own document).
+
+    Gọi mỗi lần ingest 1 văn bản có Provision (cùng điều kiện với
+    index_provisions_to_graph — chỉ văn bản luật, xem ingestion.py bước 10c).
+    Idempotent: SET vô điều kiện (không phải ON CREATE SET) hội tụ về cùng node dù
+    node đã tồn tại dưới dạng placeholder (do văn bản khác viện dẫn tới trước) hay
+    node thật từ lần ingest trước (retry/reindex) — content (name) luôn được cập
+    nhật theo lần ingest mới nhất, is_placeholder luôn về false.
+    """
+    addr = build_document_address(owner_id, document_code)
+    with driver.session() as session:
+        session.run(
+            """
+            MERGE (d:LegalDocument {legal_address: $addr})
+            SET  d.owner_id       = $owner_id,
+                 d.document_code  = $document_code,
+                 d.name           = $name,
+                 d.is_placeholder = false
+            """,
+            addr=addr,
+            owner_id=owner_id,
+            document_code=document_code,
+            name=name,
+        )
+    logger.info("Neo4j LegalDocument indexed: document_code=%s", document_code)
+
+
+def index_document_placeholders_to_graph(
+    driver: Driver,
+    owner_id: str | None,
+    own_document_code: str,
+    citations: list[tuple[tuple[int, int | None, str | None] | None, str]],
+) -> None:
+    """
+    Upsert placeholder LegalDocument node cho từng văn bản được viện dẫn CHỈ BẰNG
+    MÃ (structural_parser.extract_external_citations, nhánh dieu=None) + cạnh
+    VIEN_DAN_VAN_BAN từ nguồn.
+
+    citations: [(source_key, target_document_code), ...]. source_key=None khi câu
+    viện dẫn không nằm trong Provision nào đã parse được — cạnh khi đó xuất phát
+    từ chính LegalDocument của own_document_code (PHẢI đã được MERGE bởi
+    index_legal_document_to_graph TRƯỚC lệnh gọi này trong cùng lượt ingest, xem
+    ingestion.py, để MATCH bên dưới trúng node).
+
+    Idempotent — MERGE theo legal_address + ON CREATE SET, cùng nguyên tắc "không
+    đè node thật thành placeholder" như index_external_placeholders_to_graph.
+    """
+    if not citations:
+        return
+
+    own_addr = build_document_address(owner_id, own_document_code)
+
+    placeholder_by_addr: dict[str, dict] = {}
+    edges_from_provision: list[dict] = []
+    edges_from_own_doc: list[dict] = []
+
+    for source_key, doc_code in citations:
+        target_addr = build_document_address(owner_id, doc_code)
+        placeholder_by_addr[target_addr] = {
+            "legal_address": target_addr,
+            "owner_id": owner_id,
+            "document_code": doc_code,
+        }
+        if source_key is not None:
+            dieu, khoan, diem = source_key
+            src_addr = build_legal_address(owner_id, own_document_code, dieu, khoan, diem)
+            edges_from_provision.append({"from_addr": src_addr, "to_addr": target_addr})
+        else:
+            edges_from_own_doc.append({"from_addr": own_addr, "to_addr": target_addr})
+
+    with driver.session() as session:
+        session.run(
+            """
+            UNWIND $placeholders AS ph
+            MERGE (d:LegalDocument {legal_address: ph.legal_address})
+            ON CREATE SET
+                d.owner_id       = ph.owner_id,
+                d.document_code  = ph.document_code,
+                d.name           = null,
+                d.is_placeholder = true
+            """,
+            placeholders=list(placeholder_by_addr.values()),
+        )
+
+    if edges_from_provision:
+        with driver.session() as session:
+            session.run(
+                """
+                UNWIND $edges AS e
+                MATCH (p:Provision {legal_address: e.from_addr})
+                MATCH (d:LegalDocument {legal_address: e.to_addr})
+                MERGE (p)-[:VIEN_DAN_VAN_BAN]->(d)
+                """,
+                edges=edges_from_provision,
+            )
+
+    if edges_from_own_doc:
+        with driver.session() as session:
+            session.run(
+                """
+                UNWIND $edges AS e
+                MATCH (s:LegalDocument {legal_address: e.from_addr})
+                MATCH (d:LegalDocument {legal_address: e.to_addr})
+                MERGE (s)-[:VIEN_DAN_VAN_BAN]->(d)
+                """,
+                edges=edges_from_own_doc,
+            )
+
+    logger.info(
+        "Neo4j LegalDocument placeholders indexed: own_document_code=%s targets=%d "
+        "edges_from_provision=%d edges_from_own_doc=%d",
+        own_document_code,
+        len(placeholder_by_addr),
+        len(edges_from_provision),
+        len(edges_from_own_doc),
+    )

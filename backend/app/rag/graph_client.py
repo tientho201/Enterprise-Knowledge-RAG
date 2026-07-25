@@ -43,4 +43,10 @@ def ensure_graph_schema(driver: Driver) -> None:
             "CREATE CONSTRAINT provision_address_unique IF NOT EXISTS "
             "FOR (p:Provision) REQUIRE p.legal_address IS UNIQUE"
         )
+        # Document-level layer (Phase 3) — legal_address = owner_id:document_code
+        # (không có DIEU/KHOAN), xem ingestion/graph_indexer.py.
+        session.run(
+            "CREATE CONSTRAINT legal_document_address_unique IF NOT EXISTS "
+            "FOR (d:LegalDocument) REQUIRE d.legal_address IS UNIQUE"
+        )
     logger.info("Neo4j graph schema verified.")
