@@ -124,8 +124,13 @@ def _ingest(
 
     chunk_links: list[tuple[tuple[int, int | None, str | None], str]] = []
     for p in provisions:
+        if p.char_start is None or p.char_end is None:
+            continue
         for cid, c in zip(chunk_ids, chunks, strict=True):
-            c_start, c_end = c.char_start, c.char_start + len(c.content)
+            c_start = c.char_start
+            if c_start is None:
+                continue
+            c_end = c_start + len(c.content)
             if c_start < p.char_end and c_end > p.char_start:
                 chunk_links.append(((p.key.dieu, p.key.khoan, p.key.diem), cid))
 

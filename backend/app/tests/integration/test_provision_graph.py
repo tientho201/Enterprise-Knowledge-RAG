@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
-from neo4j import Driver, GraphDatabase
+from neo4j import Driver, GraphDatabase, Record
 
 from app.ingestion.chunker import DocumentChunker
 from app.ingestion.graph_indexer import (
@@ -100,6 +100,12 @@ def cleanup_provision_graph(neo4j_driver: Driver, owner_id: str) -> Iterator[Non
         )
 
 
+def _r(result: Record | None) -> Record:
+    """Assert .single() result is not None (Cypher count() always returns a row)."""
+    assert result is not None
+    return result
+
+
 def _index_sample(
     driver: Driver, owner_id: str
 ) -> tuple[list[ParsedProvision], list[tuple], list[ParsedCitation]]:
@@ -114,8 +120,12 @@ def _index_sample(
 
     chunk_links: list[tuple[tuple[int, int | None, str | None], str]] = []
     for p in provisions:
+        if p.char_start is None or p.char_end is None:
+            continue
         for chunk in chunks:
             c_start = chunk.char_start
+            if c_start is None:
+                continue
             c_end = c_start + len(chunk.content)
             if c_start < p.char_end and c_end > p.char_start:
                 chunk_links.append(
@@ -153,17 +163,17 @@ def _index_sample(
 
 def _counts(driver: Driver, owner_id: str) -> tuple[int, int, int]:
     with driver.session() as session:
-        n_provisions = session.run(
+        n_provisions = _r(session.run(
             "MATCH (p:Provision {owner_id: $o}) RETURN count(p) AS n", o=owner_id
-        ).single()["n"]
-        n_has_chunk = session.run(
+        ).single())["n"]
+        n_has_chunk = _r(session.run(
             "MATCH (:Provision {owner_id: $o})-[r:HAS_CHUNK]->(:Chunk) RETURN count(r) AS n",
             o=owner_id,
-        ).single()["n"]
-        n_vien_dan = session.run(
+        ).single())["n"]
+        n_vien_dan = _r(session.run(
             "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN]->(:Provision) RETURN count(r) AS n",
             o=owner_id,
-        ).single()["n"]
+        ).single())["n"]
     return n_provisions, n_has_chunk, n_vien_dan
 
 
@@ -306,6 +316,7 @@ def test_external_placeholder_has_vien_dan_edge_from_citing_provision(
             src=source_addr,
             dst=target_addr,
         ).single()
+    assert record is not None
     assert record["n"] == 1
 
 
@@ -316,15 +327,15 @@ def test_external_placeholder_is_idempotent_across_two_runs(
     _index_external_sample(neo4j_driver, owner_id)
 
     with neo4j_driver.session() as session:
-        n_placeholders = session.run(
+        n_placeholders = _r(session.run(
             "MATCH (p:Provision {owner_id: $o, is_placeholder: true}) RETURN count(p) AS n",
             o=owner_id,
-        ).single()["n"]
-        n_edges = session.run(
+        ).single())["n"]
+        n_edges = _r(session.run(
             "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN]->(:Provision {is_placeholder: true}) "
             "RETURN count(r) AS n",
             o=owner_id,
-        ).single()["n"]
+        ).single())["n"]
 
     assert n_placeholders == 1, "MERGE trùng địa chỉ phải gộp, không nhân đôi placeholder"
     assert n_edges == 1
@@ -360,6 +371,7 @@ def test_external_placeholder_does_not_overwrite_real_provision_ingested_later(
             "p.content AS content",
             addr=target_addr,
         ).single()
+    assert record is not None
     assert record["ph"] is False
     assert record["content"] == "Nội dung Điều 5 thật"
 
@@ -378,6 +390,7 @@ def test_external_placeholder_does_not_overwrite_real_provision_ingested_later(
             "p.content AS content",
             addr=target_addr,
         ).single()
+    assert record is not None
     assert record["ph"] is False, "node thật KHÔNG được đè lại thành placeholder"
     assert record["content"] == "Nội dung Điều 5 thật"
 
@@ -415,6 +428,7 @@ def test_real_provision_ingested_first_is_not_downgraded_by_later_placeholder_at
             "p.content AS content",
             addr=target_addr,
         ).single()
+    assert record is not None
     assert record["ph"] is False, "node thật ingest trước KHÔNG được biến thành placeholder"
     assert record["content"] == "Nội dung Điều 5 thật"
 
@@ -451,10 +465,11 @@ def test_backfill_flow_placeholder_then_real_ingest_twice_is_idempotent(
             "p.content AS content",
             addr=target_addr,
         ).single()
-        n_nodes = session.run(
+        n_nodes = _r(session.run(
             "MATCH (p:Provision {legal_address: $addr}) RETURN count(p) AS n", addr=target_addr
-        ).single()["n"]
+        ).single())["n"]
 
+    assert record is not None
     assert record["ph"] is False
     assert record["content"] == "Nội dung Điều 5 thật"
     assert n_nodes == 1, "backfill lặp lại không được tạo trùng node"
@@ -549,6 +564,7 @@ def test_document_level_edge_from_provision_source(
             src=source_addr,
             dst=target_addr,
         ).single()
+    assert record is not None
     assert record["n"] == 1
 
 
@@ -569,6 +585,7 @@ def test_document_level_edge_from_own_document_when_source_is_preamble(
             src=own_addr,
             dst=target_addr,
         ).single()
+    assert record is not None
     assert record["n"] == 1
 
 
@@ -583,6 +600,7 @@ def test_document_level_own_document_is_real_not_placeholder(
             "d.name AS name",
             addr=own_addr,
         ).single()
+    assert record is not None
     assert record["ph"] is False
     assert record["name"] == "Nghị định 99/2024"
 
@@ -609,10 +627,11 @@ def test_document_level_backfill_when_real_document_ingested_later(
             "d.name AS name",
             addr=target_addr,
         ).single()
-        n_nodes = session.run(
+        n_nodes = _r(session.run(
             "MATCH (d:LegalDocument {legal_address: $addr}) RETURN count(d) AS n", addr=target_addr
-        ).single()["n"]
+        ).single())["n"]
 
+    assert record is not None
     assert record["ph"] is False
     assert record["name"] == "Nghị định 88/2019 thật"
     assert n_nodes == 1
@@ -625,19 +644,19 @@ def test_document_level_placeholder_is_idempotent_across_two_runs(
     _index_doc_level_sample(neo4j_driver, owner_id)
 
     with neo4j_driver.session() as session:
-        n_docs = session.run(
+        n_docs = _r(session.run(
             "MATCH (d:LegalDocument {owner_id: $o}) RETURN count(d) AS n", o=owner_id
-        ).single()["n"]
-        n_edges = session.run(
+        ).single())["n"]
+        n_edges = _r(session.run(
             "MATCH (:LegalDocument {owner_id: $o})-[r:VIEN_DAN_VAN_BAN]->(:LegalDocument) "
             "RETURN count(r) AS n",
             o=owner_id,
-        ).single()["n"]
-        n_provision_edges = session.run(
+        ).single())["n"]
+        n_provision_edges = _r(session.run(
             "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN_VAN_BAN]->(:LegalDocument) "
             "RETURN count(r) AS n",
             o=owner_id,
-        ).single()["n"]
+        ).single())["n"]
 
     # 3 LegalDocument: own (99/2024, thật) + 2 placeholder (77/2020, 88/2019).
     assert n_docs == 3, "MERGE trùng địa chỉ phải gộp, không nhân đôi qua 2 lần chạy"
