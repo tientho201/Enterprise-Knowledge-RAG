@@ -66,9 +66,30 @@ async def test_resolve_implicit_citations_batches_all_sentences_into_one_call():
     phí cốt lõi của phase 2."""
     response = json.dumps(
         [
-            {"index": 0, "is_citation": True, "document_code": None, "dieu": 5, "khoan": None, "diem": None},
-            {"index": 1, "is_citation": False, "document_code": None, "dieu": None, "khoan": None, "diem": None},
-            {"index": 2, "is_citation": True, "document_code": "88/2019/NĐ-CP", "dieu": 3, "khoan": 1, "diem": "a"},
+            {
+                "index": 0,
+                "is_citation": True,
+                "document_code": None,
+                "dieu": 5,
+                "khoan": None,
+                "diem": None,
+            },
+            {
+                "index": 1,
+                "is_citation": False,
+                "document_code": None,
+                "dieu": None,
+                "khoan": None,
+                "diem": None,
+            },
+            {
+                "index": 2,
+                "is_citation": True,
+                "document_code": "88/2019/NĐ-CP",
+                "dieu": 3,
+                "khoan": 1,
+                "diem": "a",
+            },
         ]
     )
     llm = FakeLLM(response=response)
@@ -88,7 +109,16 @@ async def test_resolve_implicit_citations_missing_index_defaults_to_unresolved()
     """LLM bỏ sót 1 index trong response -> câu đó fallback về is_citation=False
     (an toàn: không bịa hơn là bỏ sót)."""
     response = json.dumps(
-        [{"index": 0, "is_citation": True, "document_code": None, "dieu": 1, "khoan": None, "diem": None}]
+        [
+            {
+                "index": 0,
+                "is_citation": True,
+                "document_code": None,
+                "dieu": 1,
+                "khoan": None,
+                "diem": None,
+            }
+        ]
     )
     llm = FakeLLM(response=response)
     result = await resolve_implicit_citations(llm, ["câu 1", "câu 2"])
@@ -111,9 +141,22 @@ async def test_resolve_implicit_citations_malformed_json_falls_back_safely():
 
 @pytest.mark.asyncio
 async def test_resolve_implicit_citations_strips_markdown_code_fence():
-    response = "```json\n" + json.dumps(
-        [{"index": 0, "is_citation": True, "document_code": None, "dieu": 7, "khoan": None, "diem": None}]
-    ) + "\n```"
+    response = (
+        "```json\n"
+        + json.dumps(
+            [
+                {
+                    "index": 0,
+                    "is_citation": True,
+                    "document_code": None,
+                    "dieu": 7,
+                    "khoan": None,
+                    "diem": None,
+                }
+            ]
+        )
+        + "\n```"
+    )
     llm = FakeLLM(response=response)
     result = await resolve_implicit_citations(llm, ["câu 1"])
     assert result[0].dieu == 7
@@ -165,7 +208,7 @@ def test_dieu_looks_like_misread_khoan_true_case_thật_phase_2():
 
 
 def test_dieu_looks_like_misread_khoan_false_when_dieu_explicit():
-    """"khoản 5 Điều 5" — số trùng nhưng Điều 5 được nêu tường minh -> hợp lệ."""
+    """ "khoản 5 Điều 5" — số trùng nhưng Điều 5 được nêu tường minh -> hợp lệ."""
     assert _dieu_looks_like_misread_khoan("theo khoản 5 Điều 5", dieu=5) is False
 
 
@@ -197,7 +240,10 @@ def test_classify_implicit_resolutions_internal_when_target_exists():
     resolutions = [ImplicitCitationResolution(True, None, 5, None, None)]  # trỏ Điều 5 (tồn tại)
 
     internal, external, unresolved = classify_implicit_resolutions(
-        _PROVISIONS, own_document_code="99/2024/NĐ-CP", candidates=candidates, resolutions=resolutions
+        _PROVISIONS,
+        own_document_code="99/2024/NĐ-CP",
+        candidates=candidates,
+        resolutions=resolutions,
     )
 
     assert len(internal) == 1
@@ -213,7 +259,10 @@ def test_classify_implicit_resolutions_internal_target_not_found_is_unresolved()
     resolutions = [ImplicitCitationResolution(True, None, 99, None, None)]  # Điều 99 không tồn tại
 
     internal, external, unresolved = classify_implicit_resolutions(
-        _PROVISIONS, own_document_code="99/2024/NĐ-CP", candidates=candidates, resolutions=resolutions
+        _PROVISIONS,
+        own_document_code="99/2024/NĐ-CP",
+        candidates=candidates,
+        resolutions=resolutions,
     )
     assert internal == []
     assert external == []
@@ -222,12 +271,13 @@ def test_classify_implicit_resolutions_internal_target_not_found_is_unresolved()
 
 def test_classify_implicit_resolutions_external_when_document_code_differs():
     candidates = [_candidate("theo văn bản nêu trên", char_start=20)]
-    resolutions = [
-        ImplicitCitationResolution(True, "88/2019/NĐ-CP", 5, None, None)
-    ]
+    resolutions = [ImplicitCitationResolution(True, "88/2019/NĐ-CP", 5, None, None)]
 
     internal, external, unresolved = classify_implicit_resolutions(
-        _PROVISIONS, own_document_code="99/2024/NĐ-CP", candidates=candidates, resolutions=resolutions
+        _PROVISIONS,
+        own_document_code="99/2024/NĐ-CP",
+        candidates=candidates,
+        resolutions=resolutions,
     )
     assert internal == []
     assert len(external) == 1
@@ -292,7 +342,10 @@ def test_classify_implicit_resolutions_rejects_dieu_confused_with_khoan_number()
     resolutions = [ImplicitCitationResolution(True, None, 16, None, None)]
 
     internal, external, unresolved = classify_implicit_resolutions(
-        _PROVISIONS, own_document_code="99/2024/NĐ-CP", candidates=candidates, resolutions=resolutions
+        _PROVISIONS,
+        own_document_code="99/2024/NĐ-CP",
+        candidates=candidates,
+        resolutions=resolutions,
     )
     assert internal == []
     assert external == []
@@ -307,7 +360,10 @@ def test_classify_implicit_resolutions_rejects_dieu_confused_with_khoan_number_e
     resolutions = [ImplicitCitationResolution(True, "88/2019/NĐ-CP", 16, None, None)]
 
     internal, external, unresolved = classify_implicit_resolutions(
-        _PROVISIONS, own_document_code="99/2024/NĐ-CP", candidates=candidates, resolutions=resolutions
+        _PROVISIONS,
+        own_document_code="99/2024/NĐ-CP",
+        candidates=candidates,
+        resolutions=resolutions,
     )
     assert internal == []
     assert external == []
@@ -315,14 +371,17 @@ def test_classify_implicit_resolutions_rejects_dieu_confused_with_khoan_number_e
 
 
 def test_classify_implicit_resolutions_allows_same_number_for_dieu_and_khoan_when_explicit():
-    """"khoản 5 Điều 5" — cùng số 5 xuất hiện cạnh cả "khoản" lẫn "Điều" là HỢP LỆ
+    """ "khoản 5 Điều 5" — cùng số 5 xuất hiện cạnh cả "khoản" lẫn "Điều" là HỢP LỆ
     (câu nêu tường minh "Điều 5"), không phải hallucination. Validation không được
     false-positive loại bỏ ca này."""
     candidates = [_candidate("theo khoản 5 Điều 5 của văn bản nêu trên", char_start=20)]
     resolutions = [ImplicitCitationResolution(True, None, 5, None, None)]  # trỏ Điều 5 (tồn tại)
 
     internal, external, unresolved = classify_implicit_resolutions(
-        _PROVISIONS, own_document_code="99/2024/NĐ-CP", candidates=candidates, resolutions=resolutions
+        _PROVISIONS,
+        own_document_code="99/2024/NĐ-CP",
+        candidates=candidates,
+        resolutions=resolutions,
     )
     assert len(internal) == 1
     assert internal[0].target == ProvisionKey(dieu=5)

@@ -200,7 +200,9 @@ def test_legal_address_format_on_real_nodes(
 
     with neo4j_driver.session() as session:
         rows = list(
-            session.run("MATCH (p:Provision {owner_id: $o}) RETURN p.legal_address AS addr", o=owner_id)
+            session.run(
+                "MATCH (p:Provision {owner_id: $o}) RETURN p.legal_address AS addr", o=owner_id
+            )
         )
     addresses = {r["addr"] for r in rows}
 
@@ -495,7 +497,9 @@ def _index_doc_level_sample(driver: Driver, owner_id: str) -> str:
         driver=driver, owner_id=owner_id, document_code=document_code, name="Nghị định 99/2024"
     )
 
-    external_citations = extract_external_citations(DOC_LEVEL_SAMPLE_TEXT, provisions, document_code)
+    external_citations = extract_external_citations(
+        DOC_LEVEL_SAMPLE_TEXT, provisions, document_code
+    )
     doc_level_only = [
         ((c.source.dieu, c.source.khoan, c.source.diem) if c.source else None, c.document_code)
         for c in external_citations
@@ -532,7 +536,7 @@ def test_document_level_placeholder_created_with_is_placeholder_true(
 def test_document_level_edge_from_provision_source(
     neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
 ):
-    """"...Nghị định số 88/2019/NĐ-CP" nằm trong Điều 1 Khoản 1 -> cạnh
+    """ "...Nghị định số 88/2019/NĐ-CP" nằm trong Điều 1 Khoản 1 -> cạnh
     VIEN_DAN_VAN_BAN xuất phát từ chính Provision đó (không phải LegalDocument)."""
     _index_doc_level_sample(neo4j_driver, owner_id)
 
@@ -551,7 +555,7 @@ def test_document_level_edge_from_provision_source(
 def test_document_level_edge_from_own_document_when_source_is_preamble(
     neo4j_driver: Driver, owner_id: str, cleanup_provision_graph: None
 ):
-    """"Căn cứ Nghị định số 77/2020/NĐ-CP" nằm ở phần mở đầu (TRƯỚC Điều 1) —
+    """ "Căn cứ Nghị định số 77/2020/NĐ-CP" nằm ở phần mở đầu (TRƯỚC Điều 1) —
     không có Provision nào chứa nó -> cạnh xuất phát từ chính LegalDocument của
     văn bản đang ingest (99/2024/NĐ-CP), không mất thông tin liên kết."""
     own_code = _index_doc_level_sample(neo4j_driver, owner_id)
