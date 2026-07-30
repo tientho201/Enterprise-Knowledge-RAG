@@ -112,6 +112,15 @@ class Settings(BaseSettings):
     DENSE_WEIGHT: float = 0.7
     GRAPH_WEIGHT: float = 0.3
 
+    # ── Citation graph-augmented retrieval (chế độ tra cứu "Nâng cao" ở /chat) ─
+    # Traverse VIEN_DAN từ Provision neo (khớp dense search) — 1 vòng, KHÔNG agentic
+    # multi-hop (agent tự đánh giá rồi lặp lại — đó là phase sau). max_hops áp trực
+    # tiếp vào range Cypher (`*1..{max_hops}`) nên PHẢI là int server-config, không
+    # bao giờ nhận từ input người dùng. max_related trần fanout tổng (mọi anchor
+    # gộp lại) để traversal không phình vô hạn trên văn bản viện dẫn chéo dày đặc.
+    CITATION_GRAPH_MAX_HOPS: int = 2
+    CITATION_GRAPH_MAX_RELATED: int = 30
+
     # ── Graph explorer (Giao diện Nâng cao) ───────────────────────────────────
     # Trần cứng số node trả về / 1 lần bung (expand) 1 tài liệu. react-force-graph
     # mượt tới vài trăm node trên máy tầm trung; 1 Thông tư ~40–50 trang ≈ 125 chunk
