@@ -163,17 +163,23 @@ def _index_sample(
 
 def _counts(driver: Driver, owner_id: str) -> tuple[int, int, int]:
     with driver.session() as session:
-        n_provisions = _r(session.run(
-            "MATCH (p:Provision {owner_id: $o}) RETURN count(p) AS n", o=owner_id
-        ).single())["n"]
-        n_has_chunk = _r(session.run(
-            "MATCH (:Provision {owner_id: $o})-[r:HAS_CHUNK]->(:Chunk) RETURN count(r) AS n",
-            o=owner_id,
-        ).single())["n"]
-        n_vien_dan = _r(session.run(
-            "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN]->(:Provision) RETURN count(r) AS n",
-            o=owner_id,
-        ).single())["n"]
+        n_provisions = _r(
+            session.run(
+                "MATCH (p:Provision {owner_id: $o}) RETURN count(p) AS n", o=owner_id
+            ).single()
+        )["n"]
+        n_has_chunk = _r(
+            session.run(
+                "MATCH (:Provision {owner_id: $o})-[r:HAS_CHUNK]->(:Chunk) RETURN count(r) AS n",
+                o=owner_id,
+            ).single()
+        )["n"]
+        n_vien_dan = _r(
+            session.run(
+                "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN]->(:Provision) RETURN count(r) AS n",
+                o=owner_id,
+            ).single()
+        )["n"]
     return n_provisions, n_has_chunk, n_vien_dan
 
 
@@ -327,15 +333,19 @@ def test_external_placeholder_is_idempotent_across_two_runs(
     _index_external_sample(neo4j_driver, owner_id)
 
     with neo4j_driver.session() as session:
-        n_placeholders = _r(session.run(
-            "MATCH (p:Provision {owner_id: $o, is_placeholder: true}) RETURN count(p) AS n",
-            o=owner_id,
-        ).single())["n"]
-        n_edges = _r(session.run(
-            "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN]->(:Provision {is_placeholder: true}) "
-            "RETURN count(r) AS n",
-            o=owner_id,
-        ).single())["n"]
+        n_placeholders = _r(
+            session.run(
+                "MATCH (p:Provision {owner_id: $o, is_placeholder: true}) RETURN count(p) AS n",
+                o=owner_id,
+            ).single()
+        )["n"]
+        n_edges = _r(
+            session.run(
+                "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN]->(:Provision {is_placeholder: true}) "
+                "RETURN count(r) AS n",
+                o=owner_id,
+            ).single()
+        )["n"]
 
     assert n_placeholders == 1, "MERGE trùng địa chỉ phải gộp, không nhân đôi placeholder"
     assert n_edges == 1
@@ -465,9 +475,11 @@ def test_backfill_flow_placeholder_then_real_ingest_twice_is_idempotent(
             "p.content AS content",
             addr=target_addr,
         ).single()
-        n_nodes = _r(session.run(
-            "MATCH (p:Provision {legal_address: $addr}) RETURN count(p) AS n", addr=target_addr
-        ).single())["n"]
+        n_nodes = _r(
+            session.run(
+                "MATCH (p:Provision {legal_address: $addr}) RETURN count(p) AS n", addr=target_addr
+            ).single()
+        )["n"]
 
     assert record is not None
     assert record["ph"] is False
@@ -627,9 +639,12 @@ def test_document_level_backfill_when_real_document_ingested_later(
             "d.name AS name",
             addr=target_addr,
         ).single()
-        n_nodes = _r(session.run(
-            "MATCH (d:LegalDocument {legal_address: $addr}) RETURN count(d) AS n", addr=target_addr
-        ).single())["n"]
+        n_nodes = _r(
+            session.run(
+                "MATCH (d:LegalDocument {legal_address: $addr}) RETURN count(d) AS n",
+                addr=target_addr,
+            ).single()
+        )["n"]
 
     assert record is not None
     assert record["ph"] is False
@@ -644,19 +659,25 @@ def test_document_level_placeholder_is_idempotent_across_two_runs(
     _index_doc_level_sample(neo4j_driver, owner_id)
 
     with neo4j_driver.session() as session:
-        n_docs = _r(session.run(
-            "MATCH (d:LegalDocument {owner_id: $o}) RETURN count(d) AS n", o=owner_id
-        ).single())["n"]
-        n_edges = _r(session.run(
-            "MATCH (:LegalDocument {owner_id: $o})-[r:VIEN_DAN_VAN_BAN]->(:LegalDocument) "
-            "RETURN count(r) AS n",
-            o=owner_id,
-        ).single())["n"]
-        n_provision_edges = _r(session.run(
-            "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN_VAN_BAN]->(:LegalDocument) "
-            "RETURN count(r) AS n",
-            o=owner_id,
-        ).single())["n"]
+        n_docs = _r(
+            session.run(
+                "MATCH (d:LegalDocument {owner_id: $o}) RETURN count(d) AS n", o=owner_id
+            ).single()
+        )["n"]
+        n_edges = _r(
+            session.run(
+                "MATCH (:LegalDocument {owner_id: $o})-[r:VIEN_DAN_VAN_BAN]->(:LegalDocument) "
+                "RETURN count(r) AS n",
+                o=owner_id,
+            ).single()
+        )["n"]
+        n_provision_edges = _r(
+            session.run(
+                "MATCH (:Provision {owner_id: $o})-[r:VIEN_DAN_VAN_BAN]->(:LegalDocument) "
+                "RETURN count(r) AS n",
+                o=owner_id,
+            ).single()
+        )["n"]
 
     # 3 LegalDocument: own (99/2024, thật) + 2 placeholder (77/2020, 88/2019).
     assert n_docs == 3, "MERGE trùng địa chỉ phải gộp, không nhân đôi qua 2 lần chạy"
