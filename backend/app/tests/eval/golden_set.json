@@ -1,0 +1,144 @@
+{
+  "_comment": "Golden eval set cho retrieval quality (xem app/tests/eval/test_retrieval_quality.py). Văn bản là corpus pháp luật TỰ SOẠN (mô phỏng đúng cấu trúc Điều/Khoản và cách viện dẫn chéo của văn bản luật Việt Nam thật, cùng quy ước với app/tests/integration/test_citation_retrieval.py) — không phải trích nguyên văn Nghị định 88/2019, 99/2024, 13/2023, 91/2020, 15/2020 thật. Số hiệu/tên văn bản được chọn để giống thật nhằm test đúng hành vi parser (structural_parser.py), KHÔNG dùng làm nguồn tham chiếu pháp lý.",
+
+  "documents": [
+    {
+      "id": "doc-99-2024",
+      "name": "Nghị định 99/2024/NĐ-CP — Bảo vệ dữ liệu cá nhân",
+      "text": "Nghị định số 99/2024/NĐ-CP quy định về bảo vệ dữ liệu cá nhân\n\nĐiều 1. Phạm vi điều chỉnh\nNghị định này quy định về hoạt động bảo vệ dữ liệu cá nhân, quyền và nghĩa vụ của cơ quan, tổ chức, cá nhân trong việc xử lý dữ liệu cá nhân tại Việt Nam.\n\nĐiều 2. Đối tượng áp dụng\nNghị định này áp dụng đối với cơ quan, tổ chức, cá nhân Việt Nam và cơ quan, tổ chức, cá nhân nước ngoài trực tiếp tham gia hoặc có liên quan đến hoạt động xử lý dữ liệu cá nhân tại Việt Nam.\n\nĐiều 3. Nguyên tắc bảo vệ dữ liệu cá nhân\nViệc bảo vệ dữ liệu cá nhân phải tuân thủ nguyên tắc sau đây: dữ liệu cá nhân được xử lý theo quy định của pháp luật; chủ thể dữ liệu được biết về hoạt động xử lý dữ liệu cá nhân của mình; dữ liệu cá nhân chỉ được xử lý đúng với mục đích đã đăng ký, tuyên bố; dữ liệu cá nhân được áp dụng biện pháp bảo vệ, bảo mật trong suốt quá trình xử lý.\n\nĐiều 4. Quyền của chủ thể dữ liệu\nChủ thể dữ liệu có quyền được biết, quyền đồng ý, quyền truy cập, quyền rút lại sự đồng ý, quyền xóa dữ liệu, quyền hạn chế xử lý dữ liệu và quyền khiếu nại, tố cáo, khởi kiện theo quy định của pháp luật.\n\nĐiều 6. Xử lý vi phạm quy định về bảo vệ dữ liệu cá nhân\nCơ quan, tổ chức, cá nhân có hành vi vi phạm quy định về bảo vệ dữ liệu cá nhân tại Nghị định này thì tùy theo mức độ, tính chất vi phạm mà bị xử lý theo quy định tại Điều 5 Nghị định số 88/2019/NĐ-CP.\n\nĐiều 7. Đánh giá tác động xử lý dữ liệu cá nhân\nBên Kiểm soát dữ liệu cá nhân xử lý dữ liệu cá nhân của số lượng lớn chủ thể dữ liệu phải thực hiện việc lập hồ sơ đánh giá tác động theo quy định tại Điều 10 Nghị định số 88/2019/NĐ-CP trước khi tiến hành xử lý.\n\nĐiều 8. Chuyển dữ liệu cá nhân ra nước ngoài\nViệc chuyển dữ liệu cá nhân của công dân Việt Nam ra nước ngoài phải đáp ứng điều kiện quy định tại Điều 15 Nghị định số 13/2023/NĐ-CP.\n\nĐiều 9. Thanh tra, kiểm tra\nViệc thanh tra, kiểm tra việc chấp hành pháp luật về bảo vệ dữ liệu cá nhân được thực hiện theo quy định tại Điều 25 Nghị định số 88/2019/NĐ-CP.\n\nĐiều 11. Nghĩa vụ thông báo vi phạm\nTrong thời gian 72 giờ kể từ khi phát hiện xảy ra sự cố lộ, mất dữ liệu cá nhân, Bên Kiểm soát dữ liệu cá nhân phải thông báo bằng văn bản tới cơ quan chuyên trách bảo vệ dữ liệu cá nhân.\n\nĐiều 12. Hiệu lực thi hành\nNghị định này có hiệu lực thi hành kể từ ngày 01 tháng 01 năm 2025."
+    },
+    {
+      "id": "doc-88-2019",
+      "name": "Nghị định 88/2019/NĐ-CP — Xử phạt vi phạm bảo vệ dữ liệu cá nhân",
+      "text": "Nghị định số 88/2019/NĐ-CP quy định xử phạt vi phạm hành chính về bảo vệ dữ liệu cá nhân\n\nĐiều 1. Phạm vi điều chỉnh\nNghị định này quy định về hành vi vi phạm, hình thức xử phạt, mức xử phạt, biện pháp khắc phục hậu quả đối với hành vi vi phạm hành chính trong lĩnh vực bảo vệ dữ liệu cá nhân.\n\nĐiều 5. Xử phạt hành vi để lộ, mất dữ liệu cá nhân\nPhạt tiền từ 80.000.000 đồng đến 100.000.000 đồng đối với tổ chức có hành vi để lộ, làm mất dữ liệu cá nhân của trên 100.000 chủ thể dữ liệu. Mức phạt tiền tối đa đối với tổ chức vi phạm quy định tại Điều này là 100.000.000 đồng. Trường hợp cá nhân vi phạm, mức phạt tiền bằng một phần hai mức phạt tiền đối với tổ chức.\n\nĐiều 10. Đánh giá tác động xử lý dữ liệu cá nhân\nTổ chức xử lý dữ liệu cá nhân của trên 100.000 chủ thể dữ liệu phải lập Hồ sơ đánh giá tác động xử lý dữ liệu cá nhân trước khi tiến hành xử lý, và nộp 01 bản chính cho Bộ Công an trong thời hạn 60 ngày kể từ ngày bắt đầu xử lý dữ liệu cá nhân.\n\nĐiều 25. Thẩm quyền thanh tra, kiểm tra\nCục An ninh mạng và phòng, chống tội phạm sử dụng công nghệ cao thuộc Bộ Công an chủ trì việc thanh tra, kiểm tra việc chấp hành pháp luật về bảo vệ dữ liệu cá nhân trên phạm vi toàn quốc."
+    },
+    {
+      "id": "doc-13-2023",
+      "name": "Nghị định 13/2023/NĐ-CP — Chuyển dữ liệu cá nhân ra nước ngoài",
+      "text": "Nghị định số 13/2023/NĐ-CP quy định về chuyển dữ liệu cá nhân ra nước ngoài\n\nĐiều 1. Phạm vi điều chỉnh\nNghị định này quy định về điều kiện, hồ sơ, thủ tục đối với hoạt động chuyển dữ liệu cá nhân của công dân Việt Nam ra nước ngoài.\n\nĐiều 15. Điều kiện chuyển dữ liệu cá nhân ra nước ngoài\nBên chuyển dữ liệu ra nước ngoài phải lập Hồ sơ đánh giá tác động chuyển dữ liệu cá nhân ra nước ngoài bằng tiếng Việt, gửi Bộ Công an, và lưu trữ hồ sơ trong thời hạn tối thiểu 12 tháng kể từ ngày chuyển dữ liệu."
+    },
+    {
+      "id": "doc-91-2020",
+      "name": "Nghị định 91/2020/NĐ-CP — Chống tin nhắn rác, cuộc gọi rác",
+      "text": "Nghị định số 91/2020/NĐ-CP quy định về chống tin nhắn rác, thư điện tử rác, cuộc gọi rác\n\nĐiều 1. Phạm vi điều chỉnh\nNghị định này quy định về hoạt động chống tin nhắn rác, thư điện tử rác, cuộc gọi rác và quảng cáo bằng tin nhắn, thư điện tử, cuộc gọi.\n\nĐiều 3. Nguyên tắc chống tin nhắn rác, thư điện tử rác, cuộc gọi rác\nViệc chống tin nhắn rác, thư điện tử rác, cuộc gọi rác phải bảo đảm quyền và lợi ích hợp pháp của người sử dụng; tuân thủ quy định của pháp luật về viễn thông, giao dịch điện tử, quảng cáo.\n\nĐiều 7. Trách nhiệm của doanh nghiệp viễn thông\nDoanh nghiệp viễn thông có trách nhiệm xây dựng, cập nhật hệ thống ngăn chặn tin nhắn rác, cuộc gọi rác, và báo cáo định kỳ về Bộ Thông tin và Truyền thông.\n\nĐiều 12. Xử phạt hành vi gửi tin nhắn quảng cáo, gọi điện thoại quảng cáo khi chưa được đồng ý\nHành vi gửi tin nhắn quảng cáo, gọi điện thoại quảng cáo đến người nhận khi chưa được sự đồng ý hoặc khi người nhận đã từ chối bị xử phạt theo quy định tại Điều 94 Nghị định số 15/2020/NĐ-CP.\n\nĐiều 13. Thẩm quyền xử phạt\nThẩm quyền xử phạt các hành vi vi phạm quy định tại Điều 12 Nghị định này được thực hiện theo quy định tại Điều 100 Nghị định số 15/2020/NĐ-CP."
+    },
+    {
+      "id": "doc-15-2020",
+      "name": "Nghị định 15/2020/NĐ-CP — Xử phạt vi phạm bưu chính, viễn thông",
+      "text": "Nghị định số 15/2020/NĐ-CP quy định xử phạt vi phạm hành chính trong lĩnh vực bưu chính, viễn thông, tần số vô tuyến điện, công nghệ thông tin\n\nĐiều 94. Vi phạm quy định về chống tin nhắn rác, thư điện tử rác, cuộc gọi rác\nPhạt tiền từ 60.000.000 đồng đến 80.000.000 đồng đối với hành vi gửi tin nhắn quảng cáo, gọi điện thoại quảng cáo khi chưa được sự đồng ý của người nhận. Mức phạt tiền tối đa đối với hành vi vi phạm quy định tại Điều này là 80.000.000 đồng, đồng thời bị tước quyền sử dụng Giấy phép trong thời hạn từ 01 tháng đến 03 tháng.\n\nĐiều 100. Thẩm quyền xử phạt của Thanh tra chuyên ngành Thông tin và Truyền thông\nThanh tra Bộ Thông tin và Truyền thông có thẩm quyền xử phạt đối với hành vi vi phạm quy định tại Điều 94 Nghị định này."
+    }
+  ],
+
+  "questions": [
+    {
+      "id": "A1",
+      "group": "A",
+      "query": "Doanh nghiệp để lộ dữ liệu cá nhân của khách hàng thì bị xử phạt như thế nào, mức phạt tối đa là bao nhiêu?",
+      "expected_document_id": "doc-88-2019",
+      "expected_provision": "Điều 5",
+      "expected_keywords": ["100.000.000 đồng", "100 triệu"],
+      "attached_document_ids": ["doc-99-2024", "doc-88-2019"],
+      "note": "Câu hỏi neo ở NĐ 99/2024 Điều 6 (chỉ nói 'xử lý theo Điều 5 NĐ 88/2019'), đáp án thật (số tiền) chỉ nằm ở NĐ 88/2019 Điều 5 — chỉ graph mới nối được."
+    },
+    {
+      "id": "A2",
+      "group": "A",
+      "query": "Tổ chức xử lý dữ liệu cá nhân của số lượng lớn khách hàng có phải lập báo cáo đánh giá tác động không, và nộp trong bao lâu?",
+      "expected_document_id": "doc-88-2019",
+      "expected_provision": "Điều 10",
+      "expected_keywords": ["60 ngày", "đánh giá tác động"],
+      "attached_document_ids": ["doc-99-2024", "doc-88-2019"],
+      "note": "Neo ở NĐ 99/2024 Điều 7, thời hạn cụ thể (60 ngày) chỉ có ở NĐ 88/2019 Điều 10."
+    },
+    {
+      "id": "A3",
+      "query": "Doanh nghiệp muốn chuyển dữ liệu cá nhân của khách hàng Việt Nam ra nước ngoài thì hồ sơ phải lưu trữ trong thời hạn bao lâu?",
+      "group": "A",
+      "expected_document_id": "doc-13-2023",
+      "expected_provision": "Điều 15",
+      "expected_keywords": ["12 tháng"],
+      "attached_document_ids": ["doc-99-2024", "doc-13-2023"],
+      "note": "Neo ở NĐ 99/2024 Điều 8, thời hạn lưu trữ hồ sơ chỉ có ở NĐ 13/2023 Điều 15."
+    },
+    {
+      "id": "A4",
+      "group": "A",
+      "query": "Cơ quan nào có thẩm quyền thanh tra, kiểm tra việc bảo vệ dữ liệu cá nhân của doanh nghiệp?",
+      "expected_document_id": "doc-88-2019",
+      "expected_provision": "Điều 25",
+      "expected_keywords": ["Cục An ninh mạng", "Bộ Công an"],
+      "attached_document_ids": ["doc-99-2024", "doc-88-2019"],
+      "note": "Neo ở NĐ 99/2024 Điều 9, tên cơ quan cụ thể chỉ có ở NĐ 88/2019 Điều 25."
+    },
+    {
+      "id": "A5",
+      "group": "A",
+      "query": "Gửi tin nhắn quảng cáo khi khách hàng chưa đồng ý thì bị phạt tối đa bao nhiêu tiền?",
+      "expected_document_id": "doc-15-2020",
+      "expected_provision": "Điều 94",
+      "expected_keywords": ["80.000.000 đồng"],
+      "attached_document_ids": ["doc-91-2020", "doc-15-2020"],
+      "note": "Neo ở NĐ 91/2020 Điều 12, mức phạt cụ thể chỉ có ở NĐ 15/2020 Điều 94."
+    },
+    {
+      "id": "A6",
+      "group": "A",
+      "query": "Cơ quan nào có thẩm quyền xử phạt hành vi gửi tin nhắn quảng cáo rác?",
+      "expected_document_id": "doc-15-2020",
+      "expected_provision": "Điều 100",
+      "expected_keywords": ["Thanh tra Bộ Thông tin và Truyền thông"],
+      "attached_document_ids": ["doc-91-2020", "doc-15-2020"],
+      "note": "Neo ở NĐ 91/2020 Điều 13, tên cơ quan thẩm quyền chỉ có ở NĐ 15/2020 Điều 100."
+    },
+    {
+      "id": "B1",
+      "group": "B",
+      "query": "Nguyên tắc bảo vệ dữ liệu cá nhân theo quy định hiện hành là gì?",
+      "expected_document_id": "doc-99-2024",
+      "expected_provision": "Điều 3",
+      "expected_keywords": ["biện pháp bảo vệ, bảo mật", "đúng với mục đích"],
+      "attached_document_ids": ["doc-99-2024"],
+      "note": "Đáp án nằm ngay trong văn bản neo — không cần graph."
+    },
+    {
+      "id": "B2",
+      "group": "B",
+      "query": "Chủ thể dữ liệu cá nhân có những quyền gì?",
+      "expected_document_id": "doc-99-2024",
+      "expected_provision": "Điều 4",
+      "expected_keywords": ["quyền rút lại sự đồng ý", "quyền xóa dữ liệu"],
+      "attached_document_ids": ["doc-99-2024"],
+      "note": "Đáp án nằm ngay trong văn bản neo — không cần graph."
+    },
+    {
+      "id": "B3",
+      "group": "B",
+      "query": "Khi xảy ra sự cố lộ dữ liệu cá nhân, doanh nghiệp phải thông báo cho cơ quan chức năng trong bao lâu?",
+      "expected_document_id": "doc-99-2024",
+      "expected_provision": "Điều 11",
+      "expected_keywords": ["72 giờ"],
+      "attached_document_ids": ["doc-99-2024"],
+      "note": "Đáp án nằm ngay trong văn bản neo — không cần graph."
+    },
+    {
+      "id": "B4",
+      "group": "B",
+      "query": "Nguyên tắc chống tin nhắn rác, cuộc gọi rác là gì?",
+      "expected_document_id": "doc-91-2020",
+      "expected_provision": "Điều 3",
+      "expected_keywords": ["quyền và lợi ích hợp pháp"],
+      "attached_document_ids": ["doc-91-2020"],
+      "note": "Đáp án nằm ngay trong văn bản neo — không cần graph."
+    },
+    {
+      "id": "B5",
+      "group": "B",
+      "query": "Doanh nghiệp viễn thông có trách nhiệm gì trong việc chống tin nhắn rác?",
+      "expected_document_id": "doc-91-2020",
+      "expected_provision": "Điều 7",
+      "expected_keywords": ["hệ thống ngăn chặn", "Bộ Thông tin và Truyền thông"],
+      "attached_document_ids": ["doc-91-2020"],
+      "note": "Đáp án nằm ngay trong văn bản neo — không cần graph."
+    }
+  ]
+}

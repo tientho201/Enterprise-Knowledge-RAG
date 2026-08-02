@@ -56,6 +56,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
     "neo4j: cần Neo4j thật đang chạy (vd docker-compose local); tự skip nếu không kết nối được — chạy riêng bằng `pytest -m neo4j`",
+    "eval: đo chất lượng retrieval (hybrid vs advanced) trên golden set — gọi Qdrant Cloud + Neo4j local + OpenAI THẬT (tốn tiền), KHÔNG chạy trong CI; chạy tay bằng `pytest -m eval -s app/tests/eval/`",
 ]
 
 [tool.coverage.run]
