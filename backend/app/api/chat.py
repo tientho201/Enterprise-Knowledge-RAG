@@ -64,6 +64,7 @@ async def chat(body: ChatRequest, user: CurrentUserDep, db: DbDep):
         api_key=body.api_key,
         base_url=body.base_url,
         image_ids=body.image_ids,
+        search_mode=body.search_mode,
     )
 
 
@@ -91,6 +92,7 @@ async def chat_stream(body: ChatRequest, user: CurrentUserDep, db: DbDep):
         api_key=body.api_key,
         base_url=body.base_url,
         image_ids=body.image_ids,
+        search_mode=body.search_mode,
     )
     return StreamingResponse(
         stream,

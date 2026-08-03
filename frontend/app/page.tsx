@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useRef, useEffect } from "react"
+import React, { useState, useRef, useEffect, useMemo } from "react"
 import { 
   Send, 
   Bot, 
@@ -39,6 +39,7 @@ import {
   Loader2
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import CitationGraphInline from "@/components/CitationGraphInline"
 import { useApp, CustomModel, SYSTEM_DEFAULT_MODEL } from "@/lib/context"
 import {
   type Citation,
@@ -129,7 +130,8 @@ export default function Page() {
     isLlmGenerating,
     showRagProcessId,
     setShowRagProcessId,
-    processFile
+    processFile,
+    attachSuggestedDocument
   } = useApp()
 
   // --- Local States for the Chat View ---
@@ -142,6 +144,18 @@ export default function Page() {
   } | null>(null)
   const [copiedChunkId, setCopiedChunkId] = useState<string | null>(null)
   const [showSearchToggle, setShowSearchToggle] = useState<boolean>(false)
+
+  // Tài liệu đã gắn vào hội thoại đang mở — cho nút "Thêm vào hội thoại" ở đồ thị
+  // dẫn chiếu biết suggestion nào đã gắn rồi (mirror convDocIds trong context.tsx).
+  const attachedDocumentIds = useMemo(
+    () =>
+      new Set(
+        documents
+          .filter((d) => d.conversations.some((c) => c.id === activeSession.id))
+          .map((d) => d.id)
+      ),
+    [documents, activeSession.id]
+  )
   const [searchToolEnabled, setSearchToolEnabled] = useState<boolean>(false)
   const [newModelName, setNewModelName] = useState<string>("")
   const [newModelId, setNewModelId] = useState<string>("")
@@ -612,6 +626,19 @@ export default function Page() {
                                 )}
                               </>
                             )}
+
+                            {/* Đồ thị dẫn chiếu — chỉ chế độ "Nâng cao" (citation_graph_nodes khác rỗng) */}
+                            {!message.isStreaming &&
+                              message.citationGraphNodes &&
+                              message.citationGraphNodes.length > 0 && (
+                                <CitationGraphInline
+                                  path={message.citationGraphPath ?? []}
+                                  nodes={message.citationGraphNodes}
+                                  suggestedDocuments={message.suggestedDocuments ?? []}
+                                  attachedDocumentIds={attachedDocumentIds}
+                                  onAttachDocument={attachSuggestedDocument}
+                                />
+                              )}
                           </div>
                         ) : (
                           <div>

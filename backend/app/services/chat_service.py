@@ -1,6 +1,7 @@
 import base64
 import json
 from collections.abc import AsyncIterator
+from typing import Literal
 
 import openai
 from fastapi import HTTPException, status
@@ -89,6 +90,7 @@ class ChatService:
         api_key: str | None = None,
         base_url: str | None = None,
         image_ids: list[str] | None = None,
+        search_mode: Literal["hybrid", "vector", "keyword", "advanced"] | None = None,
     ) -> ChatResponse:
         # Get or create conversation
         if conversation_id:
@@ -139,6 +141,10 @@ class ChatService:
             "api_key": api_key,
             "base_url": base_url,
             "image_data_urls": image_data_urls,
+            "search_mode": search_mode,
+            "citation_graph_path": [],
+            "citation_graph_nodes": [],
+            "suggested_documents": [],
         }
         try:
             final_state = await graph.ainvoke(initial_state)
@@ -149,6 +155,9 @@ class ChatService:
             ) from exc
         answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."
         citations = final_state.get("citations", [])
+        citation_graph_path = final_state.get("citation_graph_path", [])
+        citation_graph_nodes = final_state.get("citation_graph_nodes", [])
+        suggested_documents = final_state.get("suggested_documents", [])
 
         # Save assistant message
         import json
@@ -192,6 +201,9 @@ class ChatService:
                 created_at=assistant_msg.created_at,
                 citations=citations,
             ),
+            citation_graph_path=citation_graph_path,
+            citation_graph_nodes=citation_graph_nodes,
+            suggested_documents=suggested_documents,
         )
 
     async def _persist_assistant(
@@ -237,6 +249,7 @@ class ChatService:
         api_key: str | None = None,
         base_url: str | None = None,
         image_ids: list[str] | None = None,
+        search_mode: Literal["hybrid", "vector", "keyword", "advanced"] | None = None,
     ) -> AsyncIterator[str]:
         """Streaming SSE: chạy retrieval rồi stream câu trả lời token-by-token.
 
@@ -295,6 +308,10 @@ class ChatService:
                 "api_key": api_key,
                 "base_url": base_url,
                 "image_data_urls": image_data_urls,
+                "search_mode": search_mode,
+                "citation_graph_path": [],
+                "citation_graph_nodes": [],
+                "suggested_documents": [],
             }
             state = await get_retrieval_graph().ainvoke(initial_state)
 
@@ -345,6 +362,11 @@ class ChatService:
                     "conversation_id": conv.id,
                     "message_id": assistant_msg.id,
                     "citations": citations,
+                    # Additive — rỗng ([]) trừ khi search_mode="advanced". FE cũ bỏ qua
+                    # field lạ, không vỡ tương thích ngược (xem schemas/chat.py::ChatResponse).
+                    "citation_graph_path": state.get("citation_graph_path", []),
+                    "citation_graph_nodes": state.get("citation_graph_nodes", []),
+                    "suggested_documents": state.get("suggested_documents", []),
                 }
             )
         except Exception as exc:  # noqa: BLE001 — báo lỗi qua stream thay vì để đứt kết nối

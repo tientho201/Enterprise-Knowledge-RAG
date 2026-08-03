@@ -48,7 +48,8 @@ class ChatRequest(BaseModel):
     image_ids: list[str] | None = Field(default=None, alias="imageIds", max_length=3)
     # Chế độ tra cứu chọn ở panel Cấu hình. None -> hành vi mặc định hiện tại (hybrid,
     # không đổi gì). "advanced" là chế độ duy nhất có gate (xem core/plan_gate.py) —
-    # tạm thời chạy y hệt hybrid, graph traversal thật chưa build (phase sau).
+    # thêm graph-augmented retrieval qua Provision layer (rag/citation_retriever.py,
+    # traverse VIEN_DAN 1-2 hop) bên cạnh hybrid, KHÔNG thay thế hybrid.
     search_mode: Literal["hybrid", "vector", "keyword", "advanced"] | None = Field(
         default=None, alias="searchMode"
     )
@@ -82,9 +83,67 @@ class MessageResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CitationGraphStep(BaseModel):
+    """1 bước traversal VIEN_DAN/VIEN_DAN_VAN_BAN — audit trail cho chế độ "Nâng cao"
+    (rag/citation_retriever.py). Chỉ khác rỗng khi search_mode="advanced"."""
+
+    from_address: str
+    to_address: str
+    relation: str
+    hops: int
+    in_context: bool
+
+
+class SuggestedDocument(BaseModel):
+    """Tài liệu được viện dẫn nhưng KHÔNG gộp vào context — chưa gắn vào hội thoại
+    này (in_library=True, document_id có giá trị) hoặc chưa có trong thư viện owner
+    (in_library=False, document_id=None). Chỉ khác rỗng khi search_mode="advanced"."""
+
+    document_code: str
+    document_id: str | None = None
+    name: str | None = None
+    in_library: bool
+    cited_from: str
+
+
+class CitationGraphNode(BaseModel):
+    """1 node trong đồ thị dẫn chiếu (UI chế độ "Nâng cao") — dedup theo address,
+    1 entry cho mỗi legal_address/document xuất hiện trong citation_graph_path.
+    Xem rag/citation_retriever.py::_classify. Chỉ khác rỗng khi search_mode="advanced".
+
+    address:      khoá nội bộ (legal_address) — CHỈ dùng để khớp with from_address/
+                  to_address của CitationGraphStep, KHÔNG hiển thị thô cho người dùng.
+    label:        nhãn dễ đọc dựng sẵn ở server (vd "Điều 5 Khoản 2, Nghị định 88/2019").
+    node_type:    "anchor" (điểm neo — Provision khớp dense search trực tiếp),
+                  "in_context" (lấy qua viện dẫn, nội dung đã gộp vào câu trả lời),
+                  "out_of_scope" (không góp nội dung — placeholder chưa từng ingest,
+                  HOẶC tài liệu thật đã có trong thư viện owner nhưng chưa gắn vào
+                  hội thoại này; phân biệt qua in_library).
+    in_library:   chỉ có ý nghĩa khi node_type="out_of_scope" — True nếu tài liệu đã
+                  có trong thư viện owner (FE hiện nút gắn vào hội thoại), False nếu
+                  chưa từng được ingest (FE hiện gợi ý tải lên).
+    content:      nguyên văn điều khoản — CHỈ có khi node_type != "out_of_scope"
+                  (anchor/in_context). None cho out_of_scope, kể cả khi in_library=True
+                  — nội dung tài liệu chưa gắn vào hội thoại này không được lộ qua đây.
+    """
+
+    address: str
+    label: str
+    document_id: str | None = None
+    document_name: str | None = None
+    node_type: Literal["anchor", "in_context", "out_of_scope"]
+    in_library: bool
+    content: str | None = None
+
+
 class ChatResponse(BaseModel):
     conversation_id: str
     message: MessageResponse
+    # Additive — rỗng ([]) trừ khi search_mode="advanced" (chế độ "Nâng cao"), FE cũ
+    # bỏ qua field không biết nên không vỡ tương thích ngược.
+    citation_graph_path: list[CitationGraphStep] = []
+    citation_graph_nodes: list[CitationGraphNode] = []
+    suggested_documents: list[SuggestedDocument] = []
 
 
 class ConversationResponse(BaseModel):

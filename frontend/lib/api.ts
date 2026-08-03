@@ -196,6 +196,39 @@ export interface Citation {
   content_snippet: string;
 }
 
+// Đồ thị dẫn chiếu (chế độ "Nâng cao", search_mode="advanced") — mirror
+// backend/app/schemas/chat.py::CitationGraphStep/CitationGraphNode/SuggestedDocument.
+// Rỗng ở mọi chế độ khác — component hiển thị PHẢI tự ẩn khi rỗng.
+export interface CitationGraphStep {
+  from_address: string;
+  to_address: string;
+  relation: string;
+  hops: number;
+  in_context: boolean;
+}
+
+// node_type: "anchor" (điểm neo, khớp dense search trực tiếp) | "in_context" (lấy
+// qua viện dẫn, nội dung đã gộp vào câu trả lời) | "out_of_scope" (không góp nội
+// dung — placeholder chưa từng ingest HOẶC tài liệu thật chưa gắn hội thoại này,
+// phân biệt qua in_library). address CHỈ dùng để khớp edge, KHÔNG hiện thô cho user.
+export interface CitationGraphNode {
+  address: string;
+  label: string;
+  document_id: string | null;
+  document_name: string | null;
+  node_type: "anchor" | "in_context" | "out_of_scope";
+  in_library: boolean;
+  content: string | null;
+}
+
+export interface SuggestedDocument {
+  document_code: string;
+  document_id: string | null;
+  name: string | null;
+  in_library: boolean;
+  cited_from: string;
+}
+
 // Ảnh gửi kèm chat (vision) — ngữ cảnh tạm, KHÔNG phải tài liệu thư viện.
 export interface ChatAttachment {
   id: string;
@@ -210,11 +243,18 @@ export interface ChatMessage {
   created_at: string;
   citations: Citation[];
   attachments: ChatAttachment[];
+  // Chỉ khác rỗng ở tin nhắn assistant được tạo với search_mode="advanced".
+  citation_graph_path?: CitationGraphStep[];
+  citation_graph_nodes?: CitationGraphNode[];
+  suggested_documents?: SuggestedDocument[];
 }
 
 export interface ChatResponse {
   conversation_id: string;
   message: ChatMessage;
+  citation_graph_path?: CitationGraphStep[];
+  citation_graph_nodes?: CitationGraphNode[];
+  suggested_documents?: SuggestedDocument[];
 }
 
 export interface ConversationSummary {
@@ -340,7 +380,14 @@ export const authAPI = {
 export interface StreamCallbacks {
   onMeta?: (conversationId: string) => void;
   onDelta?: (text: string) => void;
-  onDone?: (data: { conversation_id: string; message_id: string; citations: Citation[] }) => void;
+  onDone?: (data: {
+    conversation_id: string;
+    message_id: string;
+    citations: Citation[];
+    citation_graph_path?: CitationGraphStep[];
+    citation_graph_nodes?: CitationGraphNode[];
+    suggested_documents?: SuggestedDocument[];
+  }) => void;
   onError?: (detail: string) => void;
 }
 
@@ -450,6 +497,9 @@ export const chatAPI = {
                 conversation_id: string;
                 message_id: string;
                 citations: Citation[];
+                citation_graph_path?: CitationGraphStep[];
+                citation_graph_nodes?: CitationGraphNode[];
+                suggested_documents?: SuggestedDocument[];
               }
             );
             break;

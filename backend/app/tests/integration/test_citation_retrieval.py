@@ -195,6 +195,14 @@ def test_both_documents_attached_pulls_cited_provision_into_context(
         step["relation"] == "VIEN_DAN" and step["in_context"] for step in result.citation_graph_path
     )
 
+    # Cả 2 đã gắn hội thoại -> cả anchor (A) lẫn related in_context (B) đều có nguyên
+    # văn điều khoản trong node registry (đủ dữ liệu cho FE hiện popover "xem nguyên văn").
+    node_by_doc = {n["document_id"]: n for n in result.citation_graph_nodes}
+    assert node_by_doc[doc_a_id]["node_type"] == "anchor"
+    assert node_by_doc[doc_a_id]["content"]
+    assert node_by_doc[doc_b_id]["node_type"] == "in_context"
+    assert "Điều 5" in node_by_doc[doc_b_id]["content"]
+
 
 def test_only_a_attached_puts_b_in_suggestions_not_context(
     neo4j_driver: Driver, owner_id: str, patch_neo4j_driver, cleanup_citation_graph: None
@@ -217,6 +225,17 @@ def test_only_a_attached_puts_b_in_suggestions_not_context(
     assert "88/2019/NĐ-CP" in suggestions
     assert suggestions["88/2019/NĐ-CP"]["in_library"] is True
     assert suggestions["88/2019/NĐ-CP"]["document_id"] == doc_b_id
+
+    # Node registry cho UI đồ thị — B xuất hiện dạng out_of_scope (chưa gắn hội thoại
+    # này dù đã có trong thư viện), nhãn đọc được (KHÔNG phải legal_address thô), và
+    # KHÔNG lộ nguyên văn Điều 5 qua đây (chỉ lộ qua context_chunks khi thực sự gắn).
+    b_nodes = [n for n in result.citation_graph_nodes if n["document_id"] == doc_b_id]
+    assert len(b_nodes) == 1
+    assert b_nodes[0]["node_type"] == "out_of_scope"
+    assert b_nodes[0]["in_library"] is True
+    assert b_nodes[0]["content"] is None
+    assert "Điều 5" in b_nodes[0]["label"]
+    assert ":" not in b_nodes[0]["label"]  # không phải legal_address thô (owner_x:CODE:DIEU_n)
 
 
 def test_citation_to_document_not_in_library_is_suggested_without_library_flag(

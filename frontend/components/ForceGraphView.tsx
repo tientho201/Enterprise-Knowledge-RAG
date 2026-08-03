@@ -14,6 +14,13 @@ export interface FGNode {
   type: "document" | "chunk" | "provision"
   group: string
   meta?: Record<string, unknown>
+  // Override tuỳ chọn — khi có, THAY THẾ màu/bán kính mặc định suy từ `type`
+  // (TYPE_COLOR) và bật viền nét đứt. Dùng bởi CitationGraphInline (đồ thị dẫn
+  // chiếu 1 câu trả lời, cần 3 kiểu node ngữ nghĩa khác `type` document/chunk/
+  // provision) mà KHÔNG ảnh hưởng render mặc định ở nơi khác (vd advanced-interface).
+  color?: string
+  dashed?: boolean
+  radius?: number
   // Được react-force-graph gán khi chạy mô phỏng lực:
   x?: number
   y?: number
@@ -82,7 +89,7 @@ export default function ForceGraphView({
   const paintNode = useCallback(
     (node: FGNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const isDoc = node.type === "document"
-      const r = isDoc ? 6 : 3.5
+      const r = node.radius ?? (isDoc ? 6 : 3.5)
       const target = isDimmed(node.id) ? 0.12 : 1
       const cur = nodeAlpha.current.get(node.id) ?? target
       const alpha = cur + (target - cur) * 0.18 // ease
@@ -91,8 +98,15 @@ export default function ForceGraphView({
 
       ctx.beginPath()
       ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI)
-      ctx.fillStyle = TYPE_COLOR[node.type] || "#a3a3a3"
+      ctx.fillStyle = node.color || TYPE_COLOR[node.type] || "#a3a3a3"
       ctx.fill()
+      if (node.dashed) {
+        ctx.setLineDash([2 / globalScale, 2 / globalScale])
+        ctx.lineWidth = 1.25 / globalScale
+        ctx.strokeStyle = node.color || "#a3a3a3"
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
 
       // Vòng ngoài: tài liệu đang bung (dấu hiệu bấm lại để thu).
       if (expandedIds?.has(node.id)) {
@@ -125,7 +139,7 @@ export default function ForceGraphView({
 
   const paintPointerArea = useCallback(
     (node: FGNode, color: string, ctx: CanvasRenderingContext2D) => {
-      const r = node.type === "document" ? 6 : 3.5
+      const r = node.radius ?? (node.type === "document" ? 6 : 3.5)
       ctx.fillStyle = color
       ctx.beginPath()
       ctx.arc(node.x!, node.y!, r + 2, 0, 2 * Math.PI)

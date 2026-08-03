@@ -4,7 +4,31 @@ _owner_clause, _in_scope, và bộ phân loại context-vs-suggestion _classify.
 Test Neo4j-dependent (Cypher traversal thật) nằm ở
 tests/integration/test_citation_retrieval.py (@pytest.mark.neo4j)."""
 
-from app.rag.citation_retriever import _classify, _in_scope, _owner_clause
+from app.rag.citation_retriever import _classify, _format_node_label, _in_scope, _owner_clause
+
+# ── _format_node_label ─────────────────────────────────────────────────────────
+
+
+def test_format_node_label_provision_dieu_only():
+    assert _format_node_label(5, None, None, "Nghị định 88/2019", "ND88") == (
+        "Điều 5, Nghị định 88/2019"
+    )
+
+
+def test_format_node_label_provision_dieu_khoan_diem():
+    assert _format_node_label(5, 2, "a", "Nghị định 88/2019", "ND88") == (
+        "Điều 5 Khoản 2 Điểm a, Nghị định 88/2019"
+    )
+
+
+def test_format_node_label_falls_back_to_document_code_without_name():
+    assert _format_node_label(5, None, None, None, "ND88") == "Điều 5, ND88"
+
+
+def test_format_node_label_legal_document_no_dieu_uses_name_only():
+    assert _format_node_label(None, None, None, "Luật 4", "LAW4") == "Luật 4"
+    assert _format_node_label(None, None, None, None, "LAW4") == "LAW4"
+
 
 # ── _owner_clause ─────────────────────────────────────────────────────────────
 
@@ -42,17 +66,24 @@ def test_in_scope_document_id_not_in_list():
 # ── _classify: anchor Provision ───────────────────────────────────────────────
 
 
-def test_classify_anchor_always_goes_to_context():
-    anchors = {
-        "owner_x:LAW1:DIEU_5": {
-            "legal_address": "owner_x:LAW1:DIEU_5",
-            "document_code": "LAW1",
-            "content": "Nội dung Điều 5",
-            "chunk_id": "chunk-1",
-            "document_id": "doc-A",
-            "document_name": "Luật A",
-        }
+def _anchor_row(**overrides) -> dict:
+    row = {
+        "legal_address": "owner_x:LAW1:DIEU_5",
+        "document_code": "LAW1",
+        "content": "Nội dung Điều 5",
+        "dieu": 5,
+        "khoan": None,
+        "diem": None,
+        "chunk_id": "chunk-1",
+        "document_id": "doc-A",
+        "document_name": "Luật A",
     }
+    row.update(overrides)
+    return row
+
+
+def test_classify_anchor_always_goes_to_context():
+    anchors = {"owner_x:LAW1:DIEU_5": _anchor_row()}
     result = _classify(anchors, {}, [], document_ids=["doc-A"])
 
     assert len(result.context_chunks) == 1
@@ -60,21 +91,23 @@ def test_classify_anchor_always_goes_to_context():
     assert result.context_chunks[0].document_id == "doc-A"
     assert result.suggested_documents == []
     assert result.citation_graph_path == []
+    assert result.citation_graph_nodes == [
+        {
+            "address": "owner_x:LAW1:DIEU_5",
+            "label": "Điều 5, Luật A",
+            "document_id": "doc-A",
+            "document_name": "Luật A",
+            "node_type": "anchor",
+            "in_library": True,
+            "content": "Nội dung Điều 5",
+        }
+    ]
 
 
 def test_classify_anchor_in_context_even_when_document_ids_excludes_it():
     # Anchor đã owner/document-scoped từ _dense_search TRƯỚC khi tới traversal —
     # _classify không re-check document_ids cho anchor.
-    anchors = {
-        "owner_x:LAW1:DIEU_5": {
-            "legal_address": "owner_x:LAW1:DIEU_5",
-            "document_code": "LAW1",
-            "content": "Nội dung Điều 5",
-            "chunk_id": "chunk-1",
-            "document_id": "doc-A",
-            "document_name": "Luật A",
-        }
-    }
+    anchors = {"owner_x:LAW1:DIEU_5": _anchor_row()}
     result = _classify(anchors, {}, [], document_ids=["doc-other"])
     assert len(result.context_chunks) == 1
 
@@ -89,6 +122,9 @@ def _related_row(**overrides) -> dict:
         "document_code": "LAW2",
         "content": "Nội dung Điều 10 của Luật 2",
         "is_placeholder": False,
+        "dieu": 10,
+        "khoan": None,
+        "diem": None,
         "hops": 1,
         "chunk_id": "chunk-2",
         "document_id": "doc-B",
@@ -114,6 +150,17 @@ def test_classify_related_real_in_scope_goes_to_context():
             "in_context": True,
         }
     ]
+    assert result.citation_graph_nodes == [
+        {
+            "address": "owner_x:LAW2:DIEU_10",
+            "label": "Điều 10, Luật B",
+            "document_id": "doc-B",
+            "document_name": "Luật B",
+            "node_type": "in_context",
+            "in_library": True,
+            "content": "Nội dung Điều 10 của Luật 2",
+        }
+    ]
 
 
 def test_classify_related_real_out_of_scope_becomes_suggestion():
@@ -133,6 +180,19 @@ def test_classify_related_real_out_of_scope_becomes_suggestion():
         }
     ]
     assert result.citation_graph_path[0]["in_context"] is False
+    # out_of_scope nhưng in_library=True (đã có trong thư viện owner, chưa gắn hội
+    # thoại này) -> node vẫn mang document_id/name để FE gợi ý gắn, nhưng content=None.
+    assert result.citation_graph_nodes == [
+        {
+            "address": "owner_x:LAW2:DIEU_10",
+            "label": "Điều 10, Luật B",
+            "document_id": "doc-B",
+            "document_name": "Luật B",
+            "node_type": "out_of_scope",
+            "in_library": True,
+            "content": None,
+        }
+    ]
 
 
 def test_classify_related_real_document_ids_none_is_in_scope():
@@ -149,6 +209,7 @@ def test_classify_related_placeholder_becomes_suggestion_not_in_library():
             legal_address="owner_x:LAW3:DIEU_1",
             document_code="LAW3",
             is_placeholder=True,
+            dieu=1,
             chunk_id=None,
             document_id=None,
             document_name=None,
@@ -167,6 +228,17 @@ def test_classify_related_placeholder_becomes_suggestion_not_in_library():
         }
     ]
     assert result.citation_graph_path[0]["in_context"] is False
+    assert result.citation_graph_nodes == [
+        {
+            "address": "owner_x:LAW3:DIEU_1",
+            "label": "Điều 1, LAW3",
+            "document_id": None,
+            "document_name": None,
+            "node_type": "out_of_scope",
+            "in_library": False,
+            "content": None,
+        }
+    ]
 
 
 def test_classify_related_uses_min_hops_when_deduped_by_caller():
@@ -212,6 +284,17 @@ def test_classify_legal_document_placeholder_becomes_suggestion():
     ]
     # LegalDocument không bao giờ vào context (không có nội dung cấp Điều)
     assert result.citation_graph_path[0]["in_context"] is False
+    assert result.citation_graph_nodes == [
+        {
+            "address": "owner_x:LAW4",
+            "label": "LAW4",
+            "document_id": None,
+            "document_name": None,
+            "node_type": "out_of_scope",
+            "in_library": False,
+            "content": None,
+        }
+    ]
 
 
 def test_classify_legal_document_real_not_in_scope_is_suggestion_in_library():
@@ -228,6 +311,19 @@ def test_classify_legal_document_real_not_in_scope_is_suggestion_in_library():
             "cited_from": "owner_x:LAW1:DIEU_5",
         }
     ]
+    # Node label ưu tiên LegalDocument.name (graph) — mirror add_suggestion, KHÔNG
+    # dùng document_name (Postgres-resolved) cho label hiển thị.
+    assert result.citation_graph_nodes == [
+        {
+            "address": "owner_x:LAW4",
+            "label": "Luật 4",
+            "document_id": "doc-D",
+            "document_name": "Luật 4",
+            "node_type": "out_of_scope",
+            "in_library": True,
+            "content": None,
+        }
+    ]
 
 
 def test_classify_legal_document_real_already_in_scope_skips_suggestion():
@@ -237,6 +333,20 @@ def test_classify_legal_document_real_already_in_scope_skips_suggestion():
     result = _classify({}, {}, rows, document_ids=["doc-A"])
 
     assert result.suggested_documents == []
+    # Node registry KHÔNG dedup theo cùng logic "đã trong scope" của suggestion — edge
+    # VIEN_DAN_VAN_BAN tới address này luôn tồn tại trong citation_graph_path nên FE
+    # vẫn cần node để vẽ, dù không cần gợi ý gắn thêm.
+    assert result.citation_graph_nodes == [
+        {
+            "address": "owner_x:LAW4",
+            "label": "Luật 4",
+            "document_id": "doc-A",
+            "document_name": "Luật 4",
+            "node_type": "out_of_scope",
+            "in_library": True,
+            "content": None,
+        }
+    ]
 
 
 def test_classify_legal_document_unresolved_with_document_ids_none_is_suggestion():
@@ -252,6 +362,17 @@ def test_classify_legal_document_unresolved_with_document_ids_none_is_suggestion
             "name": "Luật 4",
             "in_library": False,
             "cited_from": "owner_x:LAW1:DIEU_5",
+        }
+    ]
+    assert result.citation_graph_nodes == [
+        {
+            "address": "owner_x:LAW4",
+            "label": "Luật 4",
+            "document_id": None,
+            "document_name": "Luật 4",
+            "node_type": "out_of_scope",
+            "in_library": False,
+            "content": None,
         }
     ]
 
@@ -308,6 +429,13 @@ def test_classify_full_mix_matches_task_scenario():
     both_attached = _classify(anchors, related, [], document_ids=["doc-A", "doc-B"])
     assert {c.chunk_id for c in both_attached.context_chunks} == {"chunk-a1", "chunk-b2"}
     assert both_attached.suggested_documents == []
+    node_types = {n["address"]: n["node_type"] for n in both_attached.citation_graph_nodes}
+    assert node_types == {"owner_x:A:DIEU_1": "anchor", "owner_x:B:DIEU_2": "in_context"}
+    contents = {n["address"]: n["content"] for n in both_attached.citation_graph_nodes}
+    assert contents == {
+        "owner_x:A:DIEU_1": "Điều 1 văn bản A",
+        "owner_x:B:DIEU_2": "Điều 2 văn bản B",
+    }
 
     # Case 2: chỉ A gắn -> B rơi vào suggested_documents, KHÔNG vào context.
     only_a_attached = _classify(anchors, related, [], document_ids=["doc-A"])
@@ -321,3 +449,11 @@ def test_classify_full_mix_matches_task_scenario():
             "cited_from": "owner_x:A:DIEU_1",
         }
     ]
+    node_types_2 = {n["address"]: n["node_type"] for n in only_a_attached.citation_graph_nodes}
+    assert node_types_2 == {"owner_x:A:DIEU_1": "anchor", "owner_x:B:DIEU_2": "out_of_scope"}
+    # B out_of_scope -> content bị chặn dù đã biết nguyên văn (KHÔNG lộ nội dung tài
+    # liệu chưa gắn vào hội thoại này qua đồ thị).
+    b_node = next(
+        n for n in only_a_attached.citation_graph_nodes if n["address"] == "owner_x:B:DIEU_2"
+    )
+    assert b_node["content"] is None

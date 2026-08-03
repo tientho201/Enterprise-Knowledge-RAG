@@ -51,6 +51,31 @@ class CitationGraphResult:
     context_chunks: list[RetrievedChunk] = field(default_factory=list)
     citation_graph_path: list[dict] = field(default_factory=list)
     suggested_documents: list[dict] = field(default_factory=list)
+    # Node registry cho UI đồ thị (chế độ "Nâng cao") — 1 entry/address, dedup theo
+    # citation_graph_path. Tách khỏi suggested_documents (dedup theo document_code,
+    # cho panel gợi ý) vì UI đồ thị cần từng node/address riêng, kể cả khi nhiều
+    # Provision cùng document_code đã gộp lại 1 suggestion.
+    citation_graph_nodes: list[dict] = field(default_factory=list)
+
+
+def _format_node_label(
+    dieu: int | None,
+    khoan: int | None,
+    diem: str | None,
+    display_name: str | None,
+    document_code: str,
+) -> str:
+    """Nhãn dễ đọc cho FE — KHÔNG BAO GIỜ để FE tự hiện legal_address thô.
+    dieu=None (node LegalDocument, không có cấp Điều) -> chỉ tên/mã văn bản."""
+    doc_part = display_name or document_code
+    if dieu is None:
+        return doc_part
+    parts = [f"Điều {dieu}"]
+    if khoan is not None:
+        parts.append(f"Khoản {khoan}")
+        if diem is not None:
+            parts.append(f"Điểm {diem}")
+    return f"{' '.join(parts)}, {doc_part}"
 
 
 def _owner_clause(alias: str, owner_id: str | None) -> str:
@@ -87,6 +112,9 @@ def _anchor_provisions(session: Any, seed_chunk_ids: list[str], owner_id: str | 
             p.legal_address  AS legal_address,
             p.document_code  AS document_code,
             p.content        AS content,
+            p.dieu           AS dieu,
+            p.khoan          AS khoan,
+            p.diem           AS diem,
             seed_chunk.chunk_id       AS chunk_id,
             seed_chunk.document_id    AS document_id,
             seed_chunk.document_name  AS document_name
@@ -133,6 +161,9 @@ def _traverse_related_provisions(
             related.document_code  AS document_code,
             related.content        AS content,
             related.is_placeholder AS is_placeholder,
+            related.dieu           AS dieu,
+            related.khoan          AS khoan,
+            related.diem           AS diem,
             hops, chunk_id, document_id, document_name
         ORDER BY hops ASC
         LIMIT $limit
@@ -285,6 +316,34 @@ def _classify(
     context_chunks: list[RetrievedChunk] = []
     citation_graph_path: list[dict] = []
     suggested_by_code: dict[str, dict] = {}
+    nodes_by_addr: dict[str, dict] = {}
+
+    def add_node(
+        address: str,
+        node_type: str,
+        dieu: int | None,
+        khoan: int | None,
+        diem: str | None,
+        document_code: str,
+        document_id: str | None,
+        document_name: str | None,
+        in_library: bool,
+        content: str | None,
+    ) -> None:
+        # First-wins theo address (mirror related_by_addr/suggested_by_code) — thứ tự
+        # gọi add_node bên dưới (anchor -> related -> legal doc) đảm bảo 1 address
+        # không bị lộn ngược loại (vd anchor không bao giờ bị ghi đè thành out_of_scope).
+        if address in nodes_by_addr:
+            return
+        nodes_by_addr[address] = {
+            "address": address,
+            "label": _format_node_label(dieu, khoan, diem, document_name, document_code),
+            "document_id": document_id,
+            "document_name": document_name,
+            "node_type": node_type,
+            "in_library": in_library,
+            "content": content,
+        }
 
     def add_suggestion(
         document_code: str,
@@ -305,7 +364,7 @@ def _classify(
 
     # Anchor: Provision khớp trực tiếp dense search → luôn trong context (chính nó
     # đã owner/document-scoped từ _dense_search trước khi tới traversal này).
-    for row in anchors_by_addr.values():
+    for addr, row in anchors_by_addr.items():
         context_chunks.append(
             RetrievedChunk(
                 chunk_id=row["chunk_id"],
@@ -315,6 +374,18 @@ def _classify(
                 score=1.0,
                 chunk_index=0,
             )
+        )
+        add_node(
+            addr,
+            "anchor",
+            row.get("dieu"),
+            row.get("khoan"),
+            row.get("diem"),
+            row["document_code"],
+            row["document_id"],
+            row["document_name"],
+            in_library=True,
+            content=row["content"],
         )
 
     for addr, row in related_by_addr.items():
@@ -332,6 +403,18 @@ def _classify(
                 }
             )
             add_suggestion(row["document_code"], None, None, False, anchor_addr)
+            add_node(
+                addr,
+                "out_of_scope",
+                row.get("dieu"),
+                row.get("khoan"),
+                row.get("diem"),
+                row["document_code"],
+                None,
+                None,
+                in_library=False,
+                content=None,
+            )
             continue
 
         in_scope = _in_scope(row["document_id"], document_ids)
@@ -355,9 +438,33 @@ def _classify(
                     chunk_index=0,
                 )
             )
+            add_node(
+                addr,
+                "in_context",
+                row.get("dieu"),
+                row.get("khoan"),
+                row.get("diem"),
+                row["document_code"],
+                row["document_id"],
+                row["document_name"],
+                in_library=True,
+                content=row["content"],
+            )
         else:
             add_suggestion(
                 row["document_code"], row["document_id"], row["document_name"], True, anchor_addr
+            )
+            add_node(
+                addr,
+                "out_of_scope",
+                row.get("dieu"),
+                row.get("khoan"),
+                row.get("diem"),
+                row["document_code"],
+                row["document_id"],
+                row["document_name"],
+                in_library=True,
+                content=None,
             )
 
     for row in legal_doc_rows:
@@ -374,17 +481,43 @@ def _classify(
         )
         if row["is_placeholder"]:
             add_suggestion(row["document_code"], None, None, False, source_addr)
+            add_node(
+                addr,
+                "out_of_scope",
+                None,
+                None,
+                None,
+                row["document_code"],
+                None,
+                None,
+                in_library=False,
+                content=None,
+            )
             continue
 
         resolved_id = row.get("document_id")
-        if resolved_id and _in_scope(resolved_id, document_ids):
-            continue  # đã gắn vào hội thoại này — không cần gợi ý
-        add_suggestion(
-            row["document_code"], resolved_id, row.get("name"), bool(resolved_id), source_addr
+        display_name = row.get("name") or row.get("document_name")
+        already_in_scope = resolved_id and _in_scope(resolved_id, document_ids)
+        if not already_in_scope:
+            add_suggestion(
+                row["document_code"], resolved_id, row.get("name"), bool(resolved_id), source_addr
+            )
+        add_node(
+            addr,
+            "out_of_scope",
+            None,
+            None,
+            None,
+            row["document_code"],
+            resolved_id,
+            display_name,
+            in_library=bool(resolved_id),
+            content=None,
         )
 
     return CitationGraphResult(
         context_chunks=context_chunks,
         citation_graph_path=citation_graph_path,
         suggested_documents=list(suggested_by_code.values()),
+        citation_graph_nodes=list(nodes_by_addr.values()),
     )

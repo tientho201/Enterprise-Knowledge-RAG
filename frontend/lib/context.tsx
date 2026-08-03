@@ -17,6 +17,9 @@ import {
   type ChatMessage,
   type Citation,
   type ChatAttachment,
+  type CitationGraphStep,
+  type CitationGraphNode,
+  type SuggestedDocument,
 } from "./api"
 
 // ============================================================
@@ -32,6 +35,12 @@ export interface Message {
   citations?: Citation[];
   // Ảnh gửi kèm (vision) — chỉ tin nhắn user có. Ngữ cảnh tạm, KHÔNG phải tài liệu thư viện.
   attachments?: ChatAttachment[];
+  // Đồ thị dẫn chiếu (chế độ "Nâng cao") — chỉ có ở tin nhắn assistant VỪA sinh ra
+  // trong phiên hiện tại (KHÔNG được backend lưu lại theo message, nên mất khi tải
+  // lại hội thoại — mirror giới hạn hiện tại của citation_graph_path/nodes).
+  citationGraphPath?: CitationGraphStep[];
+  citationGraphNodes?: CitationGraphNode[];
+  suggestedDocuments?: SuggestedDocument[];
 }
 
 export interface User {
@@ -108,6 +117,9 @@ interface AppContextType {
   toggleDocActive: (docId: string) => Promise<void>;
   // Thay toàn bộ hội thoại gắn với tài liệu (dùng ở trang document-library, hỗ trợ nhiều hội thoại).
   setDocConversations: (docId: string, conversationIds: string[]) => Promise<void>;
+  // Gắn 1 tài liệu (đã có trong thư viện) vào hội thoại đang mở — nút "Thêm vào hội
+  // thoại" ở suggested_documents (đồ thị dẫn chiếu, chế độ "Nâng cao").
+  attachSuggestedDocument: (documentId: string) => Promise<void>;
   chatSessions: ChatSession[];
   setChatSessions: React.Dispatch<React.SetStateAction<ChatSession[]>>;
   activeSessionId: string;
@@ -690,10 +702,17 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
           accumulated += text
           patchAssistant({ content: accumulated })
         },
-        // Hoàn tất → chốt nội dung + citations
-        onDone: ({ citations }) => {
+        // Hoàn tất → chốt nội dung + citations (+ đồ thị dẫn chiếu nếu chế độ "Nâng cao")
+        onDone: ({ citations, citation_graph_path, citation_graph_nodes, suggested_documents }) => {
           const processed = preprocessCitations(accumulated, citations)
-          patchAssistant({ content: processed, isStreaming: false, citations })
+          patchAssistant({
+            content: processed,
+            isStreaming: false,
+            citations,
+            citationGraphPath: citation_graph_path,
+            citationGraphNodes: citation_graph_nodes,
+            suggestedDocuments: suggested_documents,
+          })
           setIsLlmGenerating(false)
           addAuditLog(
             `Chạy truy vấn RAG: "${messageText.length > 30 ? messageText.substring(0, 30) + '...' : messageText}"`,
@@ -880,6 +899,21 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
     }
   }
 
+  // "Thêm vào hội thoại" cho suggested_documents (đồ thị dẫn chiếu, in_library=True) —
+  // gắn tài liệu ĐÃ có trong thư viện vào hội thoại đang mở, tái dùng đúng cơ chế
+  // documentsAPI.addConversation ở luồng upload (xem onMeta trong handleSendMessage).
+  // Tin nhắn tiếp theo tự động gộp tài liệu này (convDocIds lọc theo documents[].conversations).
+  const attachSuggestedDocument = async (documentId: string) => {
+    const conversationId = activeSessionId
+    if (conversationId.startsWith("new-")) return
+    const updated = await documentsAPI.addConversation(documentId, conversationId)
+    setDocuments(prev =>
+      prev.some(d => d.id === documentId)
+        ? prev.map(d => (d.id === documentId ? updated : d))
+        : [...prev, updated]
+    )
+  }
+
   const reindexDocument = async (docId: string) => {
     try {
       const updated = await documentsAPI.reindex(docId)
@@ -949,6 +983,7 @@ export function AppContextProvider({ children }: { children: React.ReactNode }) 
       setDocuments,
       toggleDocActive,
       setDocConversations,
+      attachSuggestedDocument,
       chatSessions,
       setChatSessions,
       activeSessionId,

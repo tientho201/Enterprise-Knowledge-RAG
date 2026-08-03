@@ -10,7 +10,8 @@ import asyncio
 
 from app.agents.state import AgentState
 from app.ingestion.embedder import get_embedder
-from app.rag.retriever import HybridRetriever
+from app.rag.citation_retriever import graph_augmented_search
+from app.rag.retriever import HybridRetriever, RetrievedChunk
 
 
 async def retriever_node(state: AgentState) -> AgentState:
@@ -55,9 +56,39 @@ async def retriever_node(state: AgentState) -> AgentState:
         score_threshold=score_threshold,
     )
 
+    # Chế độ "Nâng cao": thêm graph-augmented retrieval qua Provision layer (citation
+    # graph) — traverse VIEN_DAN 1-2 hop từ Provision khớp dense seeds. ĐÃ qua gate
+    # plan Pro ở route (core/plan_gate.py::require_advanced_search_access) trước khi
+    # state tới đây, nên không cần check lại quyền ở node này.
+    citation_graph_path: list[dict] = []
+    citation_graph_nodes: list[dict] = []
+    suggested_documents: list[dict] = []
+    if state.get("search_mode") == "advanced" and dense_results:
+        citation_result = await asyncio.to_thread(
+            graph_augmented_search,
+            [r.chunk_id for r in dense_results],
+            document_ids,
+            owner_id,
+        )
+        citation_graph_path = citation_result.citation_graph_path
+        citation_graph_nodes = citation_result.citation_graph_nodes
+        suggested_documents = citation_result.suggested_documents
+
+        # Dedupe theo chunk_id với hybrid merged_results — giữ score cao hơn (Provision
+        # neo/liên quan có thể trùng chunk đã có trong merged_results từ dense/graph cũ).
+        combined: dict[str, RetrievedChunk] = {c.chunk_id: c for c in merged_results}
+        for chunk in citation_result.context_chunks:
+            existing = combined.get(chunk.chunk_id)
+            if existing is None or chunk.score > existing.score:
+                combined[chunk.chunk_id] = chunk
+        merged_results = sorted(combined.values(), key=lambda x: x.score, reverse=True)
+
     return {
         **state,
         "dense_results": dense_results,
         "graph_results": graph_results,
         "merged_results": merged_results,
+        "citation_graph_path": citation_graph_path,
+        "citation_graph_nodes": citation_graph_nodes,
+        "suggested_documents": suggested_documents,
     }
