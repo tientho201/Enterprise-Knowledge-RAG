@@ -63,7 +63,7 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
         from sqlalchemy import delete as sa_delete
 
         from app.core.config import settings
-        from app.db.session import AsyncSessionLocal
+        from app.db.session import AsyncSessionLocal, engine
         from app.ingestion.chunker import DocumentChunker
         from app.ingestion.embedder import get_embedder
         from app.ingestion.pipeline import extract_text
@@ -414,7 +414,21 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
                 await doc_repo.update_status(document_id, DocumentStatus.indexed)
                 await db.commit()
 
-        asyncio.run(_run())
+        async def _main() -> None:
+            try:
+                await _run()
+            finally:
+                # asyncio.run() tears down this event loop the instant it
+                # returns. Pooled asyncpg connections opened during _run()
+                # still hold a reference to that loop, so the next retry's
+                # asyncio.run() (a brand-new loop) crashes with "Event loop is
+                # closed" the moment SQLAlchemy tries to close/replace one of
+                # them on checkout. Dispose the pool here, inside the loop
+                # that created those connections, so the next invocation
+                # starts clean.
+                await engine.dispose()
+
+        asyncio.run(_main())
         logger.info("Ingestion complete: document_id=%s chunks=%s", document_id, "ok")
         return {"document_id": document_id, "status": "indexed"}
 
