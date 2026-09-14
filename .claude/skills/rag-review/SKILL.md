@@ -1,41 +1,107 @@
 ---
 name: rag-review
-description: Dùng khi review, audit, hoặc sửa code trong RAG pipeline của backend (embedding, retrieval, reranker, chunking, LangGraph agent). Trigger khi user nhắc "review RAG", "kiểm tra retrieval", "audit embedding", hoặc khi sửa bất kỳ file nào trong backend/app/rag/, backend/app/ingestion/, backend/app/agents/. Dùng cùng với skill enterprise-knowledge-rag (đọc skill đó trước để có context tổng quan, skill này đi sâu vào checklist review).
+description: Dùng khi review, audit, hoặc sửa code trong RAG pipeline ONLINE của backend (query rewrite/HyDE, retrieval, fusion, reranker, generation, observability/eval). Trigger khi user nhắc "review RAG", "kiểm tra retrieval", "audit embedding", "RRF", "cross-encoder rerank", "Langfuse", "RAGAS", hoặc khi sửa bất kỳ file nào trong backend/app/rag/, backend/app/ingestion/, backend/app/agents/. Dùng cùng với skill enterprise-knowledge-rag (context tổng quan) và skill ingestion (phần OFFLINE — pipeline nạp tài liệu, đứng trước bước Retrieval của skill này).
 ---
 
-# RAG pipeline review checklist
+# RAG pipeline (ONLINE) review checklist
 
-Review theo đúng thứ tự pipeline: ingestion → retrieval → rerank → generation.
+Đây là nửa ONLINE (query time) của toàn bộ RAG pipeline — nửa OFFLINE (ingestion, chạy
+lúc nạp tài liệu) xem skill `ingestion`. Pipeline ONLINE mục tiêu (target architecture):
 
-## 1. Embedding (`backend/app/ingestion/embedder.py`)
-- [ ] Phải dùng `OpenAIEmbedder` qua `get_embedder()` — model `text-embedding-3-small`
-      (1536 dims). Không được import `sentence_transformers`, `FlagEmbedding`, hay `torch`.
-- [ ] `embed()` gọi sync `OpenAI` client — nếu code này chạy trong async agent node (không phải
-      Celery task), đây là known blocking issue, flag nhưng không cần block PR vì đã ghi nhận.
+```
+                    ONLINE
+┌──────────────────────────────────────────────┐
+│ User Query                                   │
+│      ↓                                       │
+│ Query Rewrite / Expand / HyDE                │
+│      ↓                                       │
+│ ┌──────────────┬────────────────┐            │
+│ │ Vector Search│   BM25 Search  │            │
+│ └──────┬───────┴───────┬────────┘            │
+│        └───────┬───────┘                     │
+│                ↓                             │
+│          RRF / Fusion                        │
+│                ↓                             │
+│             Top 20–50                        │
+│                ↓                             │
+│        Cross-Encoder Reranker                │
+│                ↓                             │
+│              Top 3–5                         │
+│                ↓                             │
+│         LLM + Context                        │
+│                ↓                             │
+│        Answer + Citations                    │
+└──────────────────────────────────────────────┘
+          │                         │
+          ▼                         ▼
+      Langfuse                    RAGAS
+     Production                 Evaluation
+      Tracing                    Quality
+```
 
-## 2. Chunking (`backend/app/ingestion/chunker.py`)
-- [ ] `chunk_size=800`, `chunk_overlap=200` (đọc từ `settings`, không hardcode).
-- [ ] Metadata mỗi chunk phải giữ được `document_id`, `chunk_index`.
+Review theo đúng thứ tự pipeline này. Mỗi mục dưới đây map 1 khối trong diagram sang code
+thật, và ghi rõ gap nếu khối đó chưa implement đúng như mục tiêu — diagram này là kiến
+trúc MỤC TIÊU để đối chiếu, không phải roadmap đã chốt phải làm; nếu định triển khai 1
+gap lớn (RRF, BM25 thật, HyDE, Langfuse, RAGAS...), hỏi lại trước khi làm vì đều là thay
+đổi kiến trúc, không phải fix nhỏ.
 
-## 3. Retrieval (`backend/app/rag/retriever.py`)
+## 0. Embedding query + Chunking (OFFLINE, không lặp lại ở đây)
+
+`embedder.py` (dense embedding, dùng lại nguyên `get_embedder()` để embed câu query lúc
+retrieval) và `chunker.py` đều thuộc nửa OFFLINE — checklist chi tiết + gap so với
+"Semantic Chunking + Metadata" trong diagram mục tiêu nằm ở skill `ingestion` (mục 2–5),
+không lặp lại ở đây để tránh 2 nguồn chân lý lệch nhau. Chỉ cần nhớ: `embed_query()` phải
+dùng đúng model đã dùng lúc ingest — đổi `EMBEDDING_MODEL` mà không reindex thì dense
+search sẽ so sánh 2 không gian vector khác nhau (silent failure, không crash nhưng kết
+quả rác).
+
+## 1. Query Rewrite / Expand / HyDE (`backend/app/agents/rewriter.py`)
+- [ ] Code thật: **chỉ có "Rewrite"**, chạy trong 1 nhánh cụ thể — `rewriter_node` chỉ được
+      gọi khi `grader_node` chấm `confidence_score < 0.3` VÀ còn retry (`retry_count <
+      MAX_RETRIES=2`), KHÔNG chạy mặc định cho mọi query như diagram mục tiêu gợi ý.
+- [ ] **"Expand" và "HyDE" chưa tồn tại** — gap. Query expansion (sinh nhiều biến thể
+      query rồi retrieve từng biến thể) và HyDE (sinh câu trả lời giả định bằng LLM rồi
+      embed câu đó thay vì embed query gốc) là 2 kỹ thuật khác nhau, nếu thêm cần quyết
+      định chạy trước retrieval đầu tiên (không phải chỉ khi grader reject) — đổi vị trí
+      trong `agents/graph.py`, không chỉ sửa `rewriter.py`.
+- [ ] `rewriter_node` là 1 LLM call riêng — nếu thêm HyDE là thêm 1 LLM call nữa trước
+      retrieval đầu tiên, cộng dồn latency; cân nhắc có đáng đánh đổi cho query enterprise
+      thường đã khá cụ thể hay không trước khi triển khai.
+
+## 2. Retrieval — Vector Search + "Sparse" Search + Fusion (`backend/app/rag/retriever.py`)
+- [ ] Code thật là `HybridRetriever`: **Vector Search = Qdrant dense**, nhưng nhánh thứ 2
+      **KHÔNG phải BM25 Search** — là Neo4j graph traversal (`NEXT_CHUNK`/`REFERENCES`,
+      xem docstring đầu file). Đây là quyết định kiến trúc đã chốt (xem skill
+      `enterprise-knowledge-rag`) — không tự thêm BM25/`rank_bm25` để "khớp đúng" diagram
+      mà không hỏi lại.
+- [ ] **Fusion hiện là weighted sum, không phải RRF** — `score = dense_weight * norm_dense
+      + graph_weight * graph_score` (`DENSE_WEIGHT=0.7`, `GRAPH_WEIGHT=0.3`, đọc từ
+      settings, không hardcode). RRF (Reciprocal Rank Fusion) dùng rank thứ tự thay vì
+      điểm số thô, ít nhạy với việc 2 nhánh có scale điểm khác nhau (cosine similarity vs
+      graph connection-count normalize) hơn weighted sum hiện tại — nếu đổi sang RRF, đây
+      là thay đổi công thức merge, cần benchmark lại trước khi merge PR, không đổi "vì
+      diagram nói vậy".
 - [ ] Dense search: hiện đang dùng `httpx.Client` gọi REST API Qdrant thủ công thay vì
-      `qdrant_client` SDK — đây là technical debt đã biết. Nếu PR sửa file này, ưu tiên migrate
+      `qdrant_client` SDK — technical debt đã biết. Nếu PR sửa file này, ưu tiên migrate
       sang `qdrant_client.search()`.
-- [ ] Graph search (Neo4j) PHẢI có try/except bao ngoài, trả về `{}` khi Neo4j lỗi — không được
-      để exception propagate lên và làm crash toàn bộ retrieval (graceful degradation).
+- [ ] Graph search (Neo4j) PHẢI có try/except bao ngoài, trả về `{}` khi Neo4j lỗi — không
+      được để exception propagate lên và làm crash toàn bộ retrieval (graceful degradation).
 - [ ] Qdrant payload mỗi point bắt buộc có: `document_id`, `document_name`, `chunk_index`,
       `content`. Thiếu field nào thì `RetrievedChunk` sẽ có giá trị rỗng/sai ở downstream.
-- [ ] Merge score: `DENSE_WEIGHT=0.7`, `GRAPH_WEIGHT=0.3` — đọc từ settings, không hardcode.
+- [ ] `DENSE_TOP_K`/`GRAPH_TOP_K` (`app/core/config.py`) là nơi tương ứng với "Top 20–50"
+      trong diagram — kiểm tra 2 giá trị này còn hợp lý nếu đổi `RERANK_TOP_K` ở bước sau.
 
-## 4. Reranker (`backend/app/rag/reranker.py`)
-- [ ] Hiện tại là **stopgap** — chỉ sort theo hybrid score có sẵn, KHÔNG load model riêng.
-      Không được thêm lại `sentence-transformers`/`CrossEncoder`/`torch` — dependency này đã bị
-      xóa khỏi `pyproject.toml` để giảm Docker image ~2.5GB. Nếu cần rerank chất lượng cao hơn,
+## 3. Reranker (`backend/app/rag/reranker.py`)
+- [ ] Hiện tại là **stopgap** — `HybridScoreReranker` chỉ sort lại theo hybrid score đã
+      tính ở bước 2 và cắt về `RERANK_TOP_K` (tương ứng "Top 3–5" trong diagram), KHÔNG
+      phải Cross-Encoder thật. Không được thêm lại `sentence-transformers`/`CrossEncoder`/
+      `torch` — dependency này đã bị xóa khỏi `pyproject.toml` để giảm Docker image ~2.5GB.
+      Nếu cần rerank chất lượng cao hơn (đúng nghĩa "Cross-Encoder Reranker" của diagram),
       đề xuất Cohere Rerank API (HTTP call, không cần tự host model) thay vì quay lại torch.
 - [ ] Interface `rerank(query, chunks) -> list[RetrievedChunk]` phải giữ nguyên signature —
       `grader_node` gọi trực tiếp, đổi signature sẽ break agent graph.
 
-## 5. LangGraph agent (`backend/app/agents/*.py`)
+## 4. LangGraph agent — LLM + Context → Answer + Citations (`backend/app/agents/*.py`)
 - [ ] `router_node`: 1 LLM call, `temperature=0.0`, output phải là đúng 1 trong 3 giá trị
       `rag | chitchat | out_of_scope` — có fallback về `rag` nếu LLM trả về giá trị khác.
 - [ ] `grader_node`: hiện gọi LLM riêng cho từng chunk (N calls/request) — cực kỳ tốn chi phí.
@@ -44,6 +110,30 @@ Review theo đúng thứ tự pipeline: ingestion → retrieval → rerank → g
       `[SOURCE: chunk_id]`. Nếu thêm web search fallback, bắt buộc có disclaimer rõ ràng đây là
       nguồn ngoài tài liệu nội bộ.
 - [ ] Không được để `generator_node` gọi OpenAI trực tiếp — luôn qua `get_llm()`.
+- [ ] Citations hiện có `page_number`/`section_title`/`source_link` luôn `None` (xem
+      `_build_context()` trong `generator.py`) — chưa nối với metadata pháp lý
+      (Điều/Khoản/Điểm) mà `structural_parser.py` đã parse được ở bước ingest. Xem gap ở
+      skill `ingestion` mục 4 (Metadata Enrichment) nếu muốn citation có `section_title`
+      thật thay vì `None`.
+
+## 5. Observability — Langfuse Production Tracing
+**Chưa tồn tại trong code — gap.** Không có tracing nào cho pipeline ONLINE hiện tại
+(không Langfuse, không LangSmith dù có nhắc trong `backend/CLAUDE.md` cũ — xem cảnh báo
+"stale" ở đầu skill `enterprise-knowledge-rag`). Nếu thêm:
+- Instrument ở `agents/graph.py` (bao toàn bộ graph run) hoặc từng node riêng
+  (`router_node`, `retriever_node`, `grader_node`, `rewriter_node`, `generator_node`) —
+  ưu tiên bao từng node để trace được latency/cost của mỗi bước riêng biệt, vì
+  `grader_node` (N LLM calls) là điểm nghi ngờ tốn chi phí nhất hiện tại.
+- KHÔNG log nội dung chunk/câu trả lời chứa dữ liệu nhạy cảm ra tracing backend bên thứ 3
+  mà không kiểm tra chính sách bảo mật dữ liệu — đây là hệ thống enterprise, document có
+  thể chứa nội dung nội bộ.
+
+## 6. Evaluation — RAGAS Quality
+**Chưa tồn tại trong code — gap.** Không có eval pipeline nào đo faithfulness/relevance/
+context precision. Nếu thêm, đặt ở `backend/app/tests/` hoặc script riêng
+(vd `backend/scripts/eval_ragas.py`), chạy offline trên 1 tập câu hỏi mẫu — KHÔNG chạy
+RAGAS trong request path (`/chat`), vì RAGAS cần thêm LLM calls để chấm điểm, không phù
+hợp latency < 5s (`Response time` target trong `backend/CLAUDE.md`).
 
 ## Khi review xong
 
