@@ -21,6 +21,8 @@ env:
 
 permissions:
   contents: read
+  checks: write # dorny/test-reporter tạo check run có chi tiết test fail
+  pull-requests: write # job ci-report comment tóm tắt lỗi lên PR
 
 defaults:
   run:
@@ -56,7 +58,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Ruff lint
-        run: uv run ruff check .
+        run: uv run ruff check . --output-format=github
 
       - name: Ruff format check
         run: uv run ruff format . --check
@@ -127,6 +129,15 @@ jobs:
         with:
           name: unit-test-results
           path: backend/reports/
+
+      - name: Publish unit test report on PR
+        uses: dorny/test-reporter@v1
+        if: (success() || failure()) && !cancelled()
+        with:
+          name: Unit tests
+          path: reports/unit-results.xml
+          reporter: java-junit
+          fail-on-error: false
 
   # ─────────────────────────────────────────────
   # JOB 3: Integration tests — auth flow (PostgreSQL + Redis) + Provision layer
@@ -237,6 +248,15 @@ jobs:
           name: integration-test-results
           path: backend/reports/
 
+      - name: Publish integration test report on PR
+        uses: dorny/test-reporter@v1
+        if: (success() || failure()) && !cancelled()
+        with:
+          name: Integration tests
+          path: reports/integration-results.xml
+          reporter: java-junit
+          fail-on-error: false
+
   # ─────────────────────────────────────────────
   # JOB 4: Docker build (validate image builds OK, không push)
   # ─────────────────────────────────────────────
@@ -261,3 +281,101 @@ jobs:
           tags: rag-backend:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────
+  # JOB 5: PR comment — tóm tắt job fail (chỉ trên pull_request)
+  # ─────────────────────────────────────────────
+  ci-report:
+    name: PR CI report
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'pull_request'
+    needs: [lint, test-unit, test-integration, docker-build]
+    timeout-minutes: 5
+
+    steps:
+      - name: Post or update PR failure summary
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- backend-ci-report -->';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const jobs = [
+              { name: 'Lint & static checks', result: '${{ needs.lint.result }}' },
+              { name: 'Unit tests', result: '${{ needs.test-unit.result }}' },
+              { name: 'Integration tests', result: '${{ needs.test-integration.result }}' },
+              { name: 'Docker build', result: '${{ needs.docker-build.result }}' },
+            ];
+
+            const icon = (result) => {
+              if (result === 'success') return '✅';
+              if (result === 'skipped') return '⏭️';
+              if (result === 'cancelled') return '🚫';
+              return '❌';
+            };
+
+            const failed = jobs.filter((j) => j.result === 'failure');
+            const allGreen = jobs.every((j) => j.result === 'success' || j.result === 'skipped');
+
+            const rows = jobs
+              .map((j) => `| ${icon(j.result)} ${j.name} | \`${j.result}\` |`)
+              .join('\n');
+
+            let body;
+            if (allGreen) {
+              body = [
+                marker,
+                '## ✅ Backend CI passed',
+                '',
+                'All checks completed successfully.',
+                '',
+                `[View workflow run](${runUrl})`,
+              ].join('\n');
+            } else {
+              const failedNames = failed.map((j) => j.name).join(', ');
+              body = [
+                marker,
+                '## ❌ Backend CI failed',
+                '',
+                `Failed job(s): **${failedNames || 'unknown'}**`,
+                '',
+                '| Job | Status |',
+                '|---|---|',
+                rows,
+                '',
+                '**Where to look**',
+                '- **Lint** — tab *Files changed* may show Ruff annotations inline.',
+                '- **Unit / Integration tests** — open the *Checks* tab → *Unit tests* / *Integration tests* for failed test names.',
+                '- **Docker build** — open the workflow log for the *Docker build* job.',
+                '',
+                `[View full workflow run](${runUrl})`,
+              ].join('\n');
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const existing = comments.find((c) =>
+              c.user.type === 'Bot' && c.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else if (!allGreen) {
+              // Chỉ tạo comment mới khi fail — tránh spam PR khi CI xanh.
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
