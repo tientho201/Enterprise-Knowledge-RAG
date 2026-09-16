@@ -101,14 +101,17 @@ dẫn đó. Xoá file JSON tạm ở Bước 2 nếu không cần giữ lại.
 
 ## Giới hạn kỹ thuật cần biết
 
-- Font PDF mặc định (Helvetica/Courier — core font của PDF, không cần nhúng file font)
-  chỉ hỗ trợ bảng mã Latin-1, **không hiển thị đúng tiếng Việt có dấu** — script tự động
-  thay ký tự không encode được bằng `?` để không crash (xem hàm `_latin1()` trong
-  `generate_report.py`). Do đó **nên viết nội dung JSON bằng tiếng Việt KHÔNG dấu** (như ví
-  dụ mẫu) để báo cáo đọc được trọn vẹn, hoặc tiếng Anh. Nếu cần tiếng Việt có dấu chuẩn
-  trong PDF, phải nhúng font TTF hỗ trợ Unicode (vd DejaVu Sans) qua
-  `pdf.add_font("DejaVu", "", "<path-to-DejaVuSans.ttf>")` — chưa làm trong bản hiện tại
-  vì cần đóng gói font file, có thể thêm sau nếu user yêu cầu.
-- Bản Markdown song song (`.md`) thì không bị giới hạn font — hiển thị tiếng Việt có dấu
-  đầy đủ. Nếu cần đọc nhanh/tiếng Việt chuẩn, ưu tiên đọc file `.md`, coi PDF là bản xuất
-  để gửi/lưu trữ chính thức.
+- **PDF hiển thị tiếng Việt có dấu đầy đủ** (đã fix 2026-09-16) — `generate_report.py`
+  tự dò 1 font TTF Unicode có sẵn trên máy (Arial/Tahoma trên Windows, DejaVu Sans/
+  Liberation Sans/Noto Sans trên Linux, Arial trên macOS — xem
+  `_UNICODE_FONT_CANDIDATES`) và `add_font()` font đó cho toàn bộ PDF. KHÔNG bundle
+  font binary vào repo (tránh commit file `.ttf` nặng, không phải text) — chỉ dùng
+  font đã có sẵn trên máy đang chạy script.
+- **Fallback (hiếm gặp):** nếu máy chạy script không có font nào trong danh sách (vd
+  Linux CI tối giản không cài font), script tự in cảnh báo ra stderr và fallback về
+  core font Helvetica/Courier (Latin-1 only) — khi đó dấu tiếng Việt bị thay bằng `?`
+  (hàm `_latin1()`), giống hành vi cũ. Cách khắc phục: cài 1 font trong danh sách (vd
+  `apt install fonts-dejavu` trên Debian/Ubuntu) hoặc đọc bản Markdown song song (luôn
+  có dấu đầy đủ, không phụ thuộc font).
+- Bản Markdown song song (`.md`) không bị giới hạn font — luôn hiển thị tiếng Việt có
+  dấu đầy đủ bất kể máy chạy script có font Unicode hay không.

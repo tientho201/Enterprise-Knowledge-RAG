@@ -12,7 +12,9 @@ grader_node không cần đổi gì.
 
 TODO: nếu cần chất lượng rerank tốt hơn hybrid score thô, cân nhắc:
   - Cohere Rerank API (rẻ, không cần tự host model)
-  - Batch 1 LLM call chấm điểm tất cả chunks cùng lúc (thay vì N calls như grader hiện tại)
+
+(grader_node đã batch 1 LLM call chấm điểm tất cả chunks cùng lúc — xem grader.py,
+không còn N calls như trước.)
 """
 
 from functools import lru_cache

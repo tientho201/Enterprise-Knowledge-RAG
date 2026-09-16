@@ -104,8 +104,11 @@ quả rác).
 ## 4. LangGraph agent — LLM + Context → Answer + Citations (`backend/app/agents/*.py`)
 - [ ] `router_node`: 1 LLM call, `temperature=0.0`, output phải là đúng 1 trong 3 giá trị
       `rag | chitchat | out_of_scope` — có fallback về `rag` nếu LLM trả về giá trị khác.
-- [ ] `grader_node`: hiện gọi LLM riêng cho từng chunk (N calls/request) — cực kỳ tốn chi phí.
-      Nếu sửa file này, cân nhắc batch thành 1 call duy nhất chấm điểm tất cả chunks.
+- [ ] `grader_node`: đã batch chấm điểm TẤT CẢ chunk trong 1 lần gọi LLM duy nhất
+      (`BATCH_GRADE_PROMPT`, parse số chunk relevant qua `re.findall`) — KHÔNG còn N calls/
+      request như thiết kế cũ. Nếu sửa file này, giữ nguyên tinh thần batch, chỉ cẩn thận
+      khi đổi `max_tokens=30`/prompt nếu tăng số chunk (`RERANK_TOP_K`) vượt quá khả năng
+      model liệt kê hết số trong 1 response ngắn.
 - [ ] `generator_node`: PHẢI chỉ trả lời từ context đã retrieve, câu trả lời phải có
       `[SOURCE: chunk_id]`. Nếu thêm web search fallback, bắt buộc có disclaimer rõ ràng đây là
       nguồn ngoài tài liệu nội bộ.
@@ -117,16 +120,23 @@ quả rác).
       thật thay vì `None`.
 
 ## 5. Observability — Langfuse Production Tracing
-**Chưa tồn tại trong code — gap.** Không có tracing nào cho pipeline ONLINE hiện tại
-(không Langfuse, không LangSmith dù có nhắc trong `backend/CLAUDE.md` cũ — xem cảnh báo
-"stale" ở đầu skill `enterprise-knowledge-rag`). Nếu thêm:
-- Instrument ở `agents/graph.py` (bao toàn bộ graph run) hoặc từng node riêng
-  (`router_node`, `retriever_node`, `grader_node`, `rewriter_node`, `generator_node`) —
-  ưu tiên bao từng node để trace được latency/cost của mỗi bước riêng biệt, vì
-  `grader_node` (N LLM calls) là điểm nghi ngờ tốn chi phí nhất hiện tại.
-- KHÔNG log nội dung chunk/câu trả lời chứa dữ liệu nhạy cảm ra tracing backend bên thứ 3
-  mà không kiểm tra chính sách bảo mật dữ liệu — đây là hệ thống enterprise, document có
-  thể chứa nội dung nội bộ.
+**`AnalyticsTracker` đã wire (2026-09-16), KHÔNG còn dead code — nhưng vẫn CHƯA có
+LLM tracing backend (Langfuse/LangSmith) — 2 việc khác nhau, gap còn lại là việc
+thứ 2.**
+- `app/analytics/tracker.py::AnalyticsTracker.measure()` đã được gọi ở
+  `chat_service.py::chat()`/`chat_stream()` — bọc TOÀN BỘ graph run (chưa tách riêng
+  từng node), log 1 dòng `QUERY_METRICS` (latency/intent/confidence/chunks/error)
+  mỗi request qua `logging` chuẩn. Nếu cần đo latency riêng từng node
+  (`router_node`/`retriever_node`/`grader_node`/`rewriter_node`/`generator_node` —
+  `grader_node` N LLM calls là điểm nghi tốn chi phí nhất), phải thêm `measure()`
+  riêng trong từng node hoặc trong `agents/graph.py`, chưa làm ở mức này.
+- **Còn thiếu:** không có Langfuse/LangSmith/Prometheus/OpenTelemetry nào trong
+  `pyproject.toml` — `QUERY_METRICS` hiện chỉ ra log text (structured nhưng không có
+  dashboard/query UI). Nếu thêm LLM tracing backend thật: KHÔNG log nội dung
+  chunk/câu trả lời chứa dữ liệu nhạy cảm ra backend bên thứ 3 (SaaS) mà không kiểm
+  tra chính sách bảo mật dữ liệu — hệ thống enterprise, document có thể chứa nội
+  dung nội bộ. Cần quyết định Langfuse (self-host) vs LangSmith (SaaS) trước khi
+  code (chi phí/vendor lock-in khác nhau).
 
 ## 6. Evaluation — RAGAS Quality
 **Chưa tồn tại trong code — gap.** Không có eval pipeline nào đo faithfulness/relevance/

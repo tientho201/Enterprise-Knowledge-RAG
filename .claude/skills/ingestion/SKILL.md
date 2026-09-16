@@ -68,13 +68,16 @@ của nửa ONLINE (`rag-review`) — đổi schema payload/field ở đây ph�
 
 - `pipeline.extract_text()` — parse thô theo `DocumentType` (pdf/docx/txt) → trả về
   1 chuỗi text phẳng, KHÔNG giữ cấu trúc. PDF hiện dùng `pypdf.PdfReader.extract_text()`
-  — chỉ đọc được text layer sẵn có trong PDF, **không có OCR**: PDF scan (ảnh thuần,
-  không có text layer) sẽ trả về chuỗi rỗng → `run_ingestion_pipeline()` raise
-  `ValueError("No text could be extracted...")` và document rơi vào `DocumentStatus.failed`.
-  Nếu cần OCR thật (Tesseract/Cloud Vision/textract), thêm nhánh xử lý trước khi gọi
-  `pypdf` — nên detect "PDF không có text layer" (vd `extract_text()` trả rỗng/quá ngắn so
-  với số trang) rồi fallback sang OCR, không OCR mọi PDF (tốn chi phí/latency không cần
-  thiết cho PDF có text layer sẵn).
+  — chỉ đọc được text layer sẵn có trong PDF, **vẫn chưa có OCR** (xem Task 6.2 trong
+  `production-ops-gaps.md` — cần chọn Docling/Unstructured trước khi code, chưa
+  quyết định). **Đã cải thiện (2026-09-16, Task 6.1):** PDF scan (không có text
+  layer) — heuristic trung bình < 20 ký tự/trang → raise `ScannedPdfError` (subclass
+  `ValueError`, message rõ số trang + gợi ý OCR ngoài) thay cho
+  `ValueError("No text could be extracted...")` chung chung trước đây. Document vẫn
+  rơi vào `DocumentStatus.failed` như cũ (KHÔNG tự OCR) — chỉ cải thiện chất lượng
+  error message để phân biệt "cần OCR" khỏi lỗi khác (S3 lỗi, PDF corrupt...). Nếu
+  sau này thêm OCR thật, route theo `except ScannedPdfError` cụ thể (không bắt
+  `ValueError` chung) để không vô tình OCR nhầm case PDF corrupt/lỗi khác.
 - `app/ingestion/structural_parser.py::parse_provisions()` — lớp "Structure" thật của
   pipeline mục tiêu: tách văn bản luật thành cây Điều → Khoản → Điểm
   (`ParsedProvision`, có `char_start`/`char_end`). Trả về `[]` nếu văn bản không có

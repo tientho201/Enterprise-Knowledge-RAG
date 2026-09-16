@@ -37,19 +37,37 @@ delimiter hay câu chống injection).
 chỉ phân loại `rag/chitchat/out_of_scope`, không có khái niệm "câu hỏi cố gắng trích xuất
 dữ liệu hàng loạt" hay "câu hỏi cố gắng jailbreak".
 
-- [ ] **Task 1.1** — Triển khai kiến trúc SYSTEM_PROMPT + developer_prompt +
-      delimiter chống injection đã thiết kế sẵn ở skill `prompt-engineering` mục 2.2
-      (blueprint code cụ thể cho 4 node đã viết sẵn, chỉ cần áp dụng). Đây là lớp phòng
-      thủ nền tảng cho các task guardrail bên dưới — làm task này TRƯỚC.
-- [ ] **Task 1.2** — Thêm guardrail rule-based tối thiểu (không cần model riêng): regex/
-      keyword-list chặn câu hỏi dạng "in lại system prompt", "ignore previous
-      instructions", "reveal your instructions" ngay ở `router_node` hoặc 1 node mới
-      `guardrail_node` chạy TRƯỚC router — reject cứng, không cần gọi LLM để tiết kiệm
-      chi phí cho case rõ ràng.
-- [ ] **Task 1.3** — DLP tối thiểu cho output: kiểm tra `final_answer` trước khi trả về
-      FE không vô tình chứa toàn văn nhiều chunk liên tiếp vượt ngưỡng bất thường (dấu
-      hiệu "bulk extraction" — 1 câu hỏi kéo ra nguyên văn >N ký tự từ >M document khác
-      nhau) — log cảnh báo + audit log (`models/audit_log.py` đã có sẵn hạ tầng).
+- [x] **Task 1.1** — Triển khai kiến trúc SYSTEM_PROMPT + developer_prompt +
+      delimiter chống injection theo blueprint ở skill `prompt-engineering` mục 2.2.
+      **Verified (2026-09-16):** file mới `app/agents/prompt_defense.py`
+      (`INJECTION_DEFENSE_RULE` + `wrap_untrusted()`); áp dụng cho cả 4 node
+      (`router.py`/`grader.py`/`rewriter.py`/`generator.py`) — mỗi node có `role=system`
+      riêng, query/context/document bọc tag XML. `generator_node`: `state["system_prompt"]`
+      giờ CỘNG THÊM vào `SYSTEM_PROMPT` (2 message system) thay vì thay thế hoàn toàn (fix
+      luôn lỗ hổng an toàn đã ghi ở skill `prompt-engineering` mục 2.1). 131 unit test pass,
+      `ruff check --fix` + `ruff format` + `mypy app/agents/` đều clean. Chưa test e2e qua
+      `/chat` thật (cần OPENAI_API_KEY — xem báo cáo trong `report/` để biết cách tự verify).
+- [x] **Task 1.2** — Guardrail rule-based chặn câu hỏi injection/jailbreak rõ ràng.
+      **Verified (2026-09-16):** file mới `app/agents/guardrail.py` — 10 regex pattern
+      (Anh + Việt) khớp "ignore previous instructions", "reveal system prompt", "jailbreak",
+      "bỏ qua hướng dẫn", v.v. `guardrail_node` chạy TRƯỚC `router_node` trong cả
+      `build_graph()`/`build_retrieval_graph()` (`agents/graph.py`) — match → `intent="blocked"`
+      → `generator_node` trả `BLOCKED_RESPONSE` NGAY, không gọi LLM. Nhân tiện phát hiện + fix
+      luôn 1 chỗ sót của Task 1.1: nhánh SSE fast-path trong `chat_service.py::chat_stream`
+      (dòng ~327) gọi LLM trực tiếp, bỏ qua `generator_node`, vẫn dùng pattern cũ
+      `system_prompt or SYSTEM_PROMPT` (thay thế, không delimiter) — đã đồng bộ theo đúng
+      Lớp 1/Lớp 2 + wrap_untrusted. 17 test mới (`test_guardrail.py`) + 131 test cũ = 148 pass,
+      ruff/mypy clean.
+- [x] **Task 1.3** — DLP tối thiểu cho output ("bulk extraction" detection).
+      **Verified (2026-09-16):** file mới `app/agents/dlp.py::check_bulk_extraction()` —
+      sliding-window kiểm tra `final_answer` có chứa đoạn nguyên văn >= 200 ký tự từ >= 3
+      tài liệu khác nhau (2 ngưỡng đều có thể override). KHÔNG chặn — chỉ log warning +
+      set `AgentState.dlp_flag`/`dlp_reason`. `generator_node` gọi check này ở nhánh RAG
+      thành công; `chat_service.py` (cả `chat()` không-stream và `chat_stream()` SSE, bao
+      gồm nhánh fast-path tự stream riêng) đọc `dlp_flag` để ghi kèm vào `extra_data` của
+      audit log đã có sẵn (`models/audit_log.py`) — KHÔNG tạo bảng/model mới. 6 test mới
+      (`test_dlp.py`, gồm case paraphrase không bị flag nhầm) + 154 test tổng cộng pass,
+      ruff/mypy clean.
 - [ ] **Task 1.4** — (P1, không block) Nếu cần guardrail model-based mạnh hơn rule-based,
       đánh giá thêm 1 LLM call rẻ (model nhỏ, `temperature=0`) chấm điểm "câu hỏi này có
       dấu hiệu injection/jailbreak không" trước `router_node` — cân nhắc latency/chi phí
@@ -66,23 +84,52 @@ hoặc orchestrator-level HPA). Task retry đã có (`autoretry_for`, `retry_bac
 cứng** — 1 task ingest bị treo (vd OpenAI API hang, Neo4j deadlock) sẽ giữ worker slot vô
 thời hạn, không bao giờ timeout để nhường chỗ cho task khác.
 
-- [ ] **Task 2.1** — Thêm `task_time_limit` (hard kill, SIGKILL) + `task_soft_time_limit`
-      (soft, raise `SoftTimeLimitExceeded` để cleanup) vào `celery_app.conf.update()`.
-      Giá trị đề xuất: ingestion task cần thời gian dài hơn API task (parse+chunk+embed
-      +index nhiều bước) — set riêng qua `@shared_task(time_limit=..., soft_time_limit=...)`
-      per-task thay vì 1 giá trị global, vì `email`/`sync` nhẹ hơn `ingestion` nhiều.
-- [ ] **Task 2.2** — Dead-letter queue: Celery không có DLQ built-in như SQS/RabbitMQ —
-      cần tự implement qua `task_annotations` + `on_failure` callback đẩy task thất bại
-      (sau khi hết `autoretry_for` retries) vào 1 queue riêng (`*.failed`) hoặc ghi vào
-      bảng Postgres (`failed_tasks`) để admin xem lại/replay thủ công, không mất âm thầm.
-      Đối chiếu `models/audit_log.py` xem có tái dùng được schema tương tự không.
-- [ ] **Task 2.3** — Autoscale worker khi bulk-upload: `docker-compose.prod.yml` hiện 1
-      worker instance cố định — nếu môi trường deploy có orchestrator (K8s HPA, Docker
-      Swarm, hoặc đơn giản hơn: `celery worker --autoscale=max,min` để scale processes
-      trong 1 container theo queue length), cần chọn 1 hướng và cấu hình cụ thể. Nếu vẫn
-      dùng docker-compose thuần (không K8s), autoscale thực chất phải làm ở tầng
-      orchestration bên ngoài compose — ghi rõ hạn chế này, không tự bịa ra config
-      compose không tồn tại.
+- [x] **Task 2.1** — Thêm `task_time_limit`/`task_soft_time_limit` per-task + global fallback.
+      **Verified (2026-09-16):** `celery_app.conf.update()` thêm global fallback
+      (`task_soft_time_limit=540`, `task_time_limit=600`) cho task nào lỡ quên set riêng.
+      Per-task override qua `@celery_app.task(time_limit=..., soft_time_limit=...)` theo
+      độ nặng: `ingest_document` 300/360s (nặng nhất — embed+Qdrant+Neo4j+LLM citation
+      fallback), `sync_confluence`/`sync_slack` 180/240s, `delete_document_vectors`/
+      `delete_chat_attachments` 60/90s, `reindex_document` 30/60s (chỉ enqueue chain),
+      `send_otp_email` 20/30s (nhẹ nhất). 4 test mới (`test_celery_time_limits.py` — global
+      fallback đúng giá trị, `ingest_document` có limit rộng nhất, mọi task soft < hard,
+      task nhẹ có limit hẹp) + 158 test tổng cộng pass, ruff/mypy clean.
+- [x] **Task 2.2** — Dead-letter queue qua bảng Postgres `failed_tasks` (không dùng
+      queue `*.failed` riêng — đơn giản hơn, tái dùng hạ tầng DB, xem lý do trong
+      `app/workers/dlq.py`). **Verified (2026-09-16):** model mới
+      `app/models/failed_task.py` (không tái dùng schema `audit_log.py` — mục đích khác:
+      audit log là hành động user, failed_tasks là lỗi hệ thống, cần thêm field
+      `celery_task_id`/`traceback`/`resolved` mà audit log không có) + migration
+      `d1e2f3a4b5c6`. Bắt bằng Celery signal `task_failure` (`app/workers/dlq.py`,
+      import 1 lần trong `celery_app.py`) — signal này CHỈ fire khi hết retry (không
+      fire mỗi lần `self.retry()`), đúng yêu cầu. 2 endpoint admin mới: `GET
+      /admin/failed-tasks` (list, filter `resolved`) + `POST
+      /admin/failed-tasks/{id}/resolve` (đánh dấu đã xử lý, không xoá — giữ audit trail).
+      8 test mới (`test_dlq.py` — json-safety helper, signal thực sự đăng ký, repo
+      create/list/resolve, admin endpoint 403/200/404) + 166 test tổng cộng pass,
+      ruff/mypy clean toàn bộ `app/`.
+- [x] **Task 2.3** — Autoscale worker khi bulk-upload. **Kết luận (2026-09-16, không
+      code — đúng bản chất hạn chế của hạ tầng hiện tại):** `docker-compose.prod.yml`
+      hiện chạy **1 worker instance cố định** (`--concurrency=4` cố định, không
+      autoscale). Có 2 hướng khả thi, KHÔNG hướng nào áp dụng được thuần trong
+      docker-compose hiện tại:
+      1. `celery worker --autoscale=max,min` — scale SỐ PROCESS con **trong 1
+         container** theo queue length. Đây là thay đổi 1 dòng lệnh `command:` trong
+         compose (khả thi ngay), nhưng chỉ scale trong giới hạn tài nguyên (CPU/RAM)
+         của DUY NHẤT 1 container/1 VM — không thêm được instance mới khi 1 VM hết
+         tài nguyên. Phù hợp nếu traffic tăng vừa phải, KHÔNG giải quyết được true
+         horizontal scale.
+      2. Scale ngang thật (thêm container/instance mới) — cần orchestrator ngoài
+         compose (K8s HPA dựa trên custom metric số message trong Redis queue, hoặc
+         Docker Swarm `docker service scale`). docker-compose (`docker-compose up`)
+         KHÔNG có cơ chế autoscale built-in theo queue length — `docker-compose.prod.yml`
+         hiện tại (dùng `docker compose up -d`, SSH deploy đơn giản, xem skill
+         `deployment`) không có orchestrator nào để tự động thêm instance.
+      **Quyết định:** KHÔNG bịa config compose không tồn tại. Nếu cần autoscale thật,
+      phải quyết định trước: (a) chấp nhận giới hạn 1 VM + dùng `--autoscale=max,min`
+      (effort nhỏ, làm được ngay), hoặc (b) migrate hạ tầng sang K8s/Swarm (effort lớn,
+      thay đổi kiến trúc deploy — ngoài phạm vi "fix nhỏ" của task này, cần bàn riêng
+      với skill `deployment`).
 - [ ] **Task 2.4** — `worker_prefetch_multiplier=1` đã có sẵn (đúng cho task nặng, tránh 1
       worker ôm nhiều task ingestion cùng lúc) — verify KHÔNG cần đổi khi thêm Task 2.1-2.3,
       chỉ note lại để người làm sau không vô tình tăng lên >1 khi tối ưu throughput.
@@ -96,21 +143,38 @@ thời hạn, không bao giờ timeout để nhường chỗ cho task khác.
 OpenTelemetry nào trong `pyproject.toml`. Trùng với gap đã ghi trong skill `rag-review`
 mục 5 (Langfuse) — task này là bước triển khai cụ thể cho gap đó.
 
-- [ ] **Task 3.1** — Wire `AnalyticsTracker.measure()` (đã có sẵn, chỉ cần gọi) vào từng
-      node trong `agents/graph.py` — ít nhất bọc quanh toàn bộ graph run trong
-      `chat_service.py` trước, sau đó tách theo từng node nếu cần đo latency riêng
-      `router`/`retriever`/`grader`/`rewriter`/`generator`.
+- [x] **Task 3.1** — Wire `AnalyticsTracker.measure()` vào `chat_service.py` (bọc toàn
+      bộ graph run — chưa tách theo từng node, xem "Gợi ý" bên dưới nếu cần đo riêng
+      `router`/`retriever`/`grader`/`rewriter`/`generator`). **Verified (2026-09-16):**
+      `chat()` (không-stream) và `chat_stream()` (SSE) đều bọc `async with
+      tracker.measure(message)`, set `metrics.intent`/`confidence_score`/
+      `retrieved_chunks`/`had_citations` từ `final_state`/`state` sau khi graph chạy
+      xong — mỗi request giờ log 1 dòng `QUERY_METRICS` (latency/intent/confidence/
+      chunks/tokens/error) qua `logging`, không còn dead code. `measure()` tự bắt cả
+      `HTTPException` raise bên trong (ghi `metrics.error` rồi re-raise), không đổi
+      hành vi lỗi cũ. 3 test mới (`test_tracker.py` — field set trong block được ghi
+      lại đúng, exception được capture + re-raise, default field khi không set gì) +
+      169 test tổng cộng pass, mypy sạch toàn bộ `app/`.
 - [ ] **Task 3.2** — Chọn 1 công cụ LLM tracing (Langfuse tự host được, phù hợp
       infra hiện tại — Redis/Neo4j đã self-host; hoặc LangSmith nếu chấp nhận SaaS) —
       cần quyết định trước khi code, KHÔNG tự chọn thay user vì có chi phí/vendor lock-in
       khác nhau. Sau khi chọn: thêm SDK vào `pyproject.toml`, wrap LLM calls qua
       `llm/factory.py` (điểm tập trung duy nhất, không phải sửa từng node).
-- [ ] **Task 3.3** — Metric hệ thống (Prometheus format) cho FastAPI: thêm
-      `prometheus-fastapi-instrumentator` hoặc middleware thủ công, expose `/metrics`.
-      Cho Celery: `celery-prometheus-exporter` hoặc `flower` (đã có sẵn lệnh
-      `uv run celery ... flower` trong `backend/CLAUDE.md`, hiện chưa chạy trong
-      `docker-compose.prod.yml` — có thể chỉ cần thêm service `flower` vào compose thay vì
-      code mới). Grafana dashboard là bước sau, không block việc expose metric trước.
+- [x] **Task 3.3** — Prometheus `/metrics` cho FastAPI + Flower cho Celery.
+      **Verified (2026-09-16):** thêm `prometheus-fastapi-instrumentator` (+
+      `prometheus-client` tự kéo theo) — `Instrumentator(excluded_handlers=["/metrics",
+      "/health"]).instrument(app).expose(app, endpoint="/metrics",
+      include_in_schema=False)` trong `main.py`. Loại trừ `/health` khỏi bộ đếm (tránh
+      nhiễu p95/p99 vì healthcheck gọi mỗi vài giây); `include_in_schema=False` để
+      không lộ ra `/docs`. Celery: thêm service `flower` vào
+      `docker-compose.prod.yml` (chỉ thêm compose, không code mới — đúng đề xuất gốc)
+      + dependency `flower` vào `pyproject.toml` + biến `FLOWER_BASIC_AUTH` bắt buộc
+      trong `.env.example`/`.env.prod` (thiếu biến này Flower expose không auth, lộ
+      args/kwargs task có thể chứa `document_id`/query). 3 test mới
+      (`test_metrics_endpoint.py` — format Prometheus đúng, không lộ ra OpenAPI schema,
+      loại trừ `/health` khỏi counter) + 172 test tổng cộng pass, mypy sạch,
+      `uv lock --check` pass (không phá CI `--frozen`). Grafana dashboard (bước sau,
+      không block) — chưa làm, để session sau nếu cần.
 - [ ] **Task 3.4** — KHÔNG log nội dung chunk/câu trả lời chứa dữ liệu nhạy cảm ra tracing
       backend bên thứ 3 (SaaS Langfuse/LangSmith) mà không kiểm tra chính sách bảo mật dữ
       liệu — nhắc lại cảnh báo đã có ở skill `rag-review` mục 5, áp dụng khi làm Task 3.2.
@@ -142,23 +206,35 @@ retrieval/answer, chỉ dùng cho rate-limit/JWT blacklist. Điểm khác so v�
 đề xuất RedisVL/GPTCache (semantic/similarity-based cache, không cần match tuyệt đối) —
 mạnh hơn cache exact-match key/value đã thiết kế trong skill `prompt-engineering`.
 
-- [ ] **Task 5.1** — Quyết định exact-match cache (đơn giản, đã có blueprint ở skill
-      `prompt-engineering` mục 3.2) hay semantic cache (RedisVL/GPTCache — bắt được câu
-      hỏi *tương đương ngữ nghĩa*, vd "chính sách nghỉ phép là gì" vs "quy định về nghỉ
-      phép ra sao", nhưng cần thêm 1 embedding + similarity search mỗi request để check
-      cache, phức tạp hơn). Đề xuất: làm exact-match trước (effort nhỏ, ROI nhanh cho case
-      nhiều user hỏi verbatim giống nhau), semantic cache là bước 2 nếu exact-match chưa
-      đủ giảm chi phí.
-- [ ] **Task 5.2** — Implement theo blueprint đã có (skill `prompt-engineering` mục 3.2):
-      **BẮT BUỘC** `owner_id` trong cache key — đây là điều kiện an toàn quan trọng nhất,
-      thiếu sẽ vi phạm data isolation đã implement công phu ở tầng retrieval.
-- [ ] **Task 5.3** — Nếu chọn semantic cache (RedisVL): cần thêm bước "check cache" TRƯỚC
-      `retriever_node` trong `agents/graph.py` — embed query, similarity search trong
-      Redis vector index, threshold quyết định cache hit/miss. Vẫn phải áp dụng owner_id
-      filter (Task 5.2) trong chính bước similarity search này, không chỉ ở exact-match.
-- [ ] **Task 5.4** — Invalidation: TTL ngắn hoặc invalidate theo `document_id` khi
-      `delete_document_vectors`/`reindex_document` chạy (xem `workers/tasks/ingestion.py`)
-      — cache trả lời cũ sau khi tài liệu đổi là stale data nguy hiểm hơn cache miss.
+- [x] **Task 5.1** — Đã quyết định (2026-09-16): **exact-match trước** (effort nhỏ,
+      ROI nhanh cho case nhiều user hỏi verbatim giống nhau) — KHÔNG làm semantic
+      cache (RedisVL/GPTCache) ở lượt này, để dành làm bước 2 nếu exact-match chưa đủ
+      giảm chi phí (xem Task 5.3, vẫn để `[ ]`, chưa làm).
+- [x] **Task 5.2** — Response Cache exact-match, `owner_id` bắt buộc trong key.
+      **Verified (2026-09-16):** file mới `app/rag/response_cache.py` —
+      `get_cached_answer()`/`set_cached_answer()` dùng SHA-256(`owner_id|query|
+      document_ids|version`) làm key, TTL 30 phút. Wire vào `chat_service.py::chat()`
+      (chỉ áp dụng case "đơn giản": không web search/ảnh/custom system_prompt/BYOM/
+      advanced mode — các case đó có biến số ngoài cache key). Cache hit → bỏ qua
+      hoàn toàn `graph.ainvoke()` (không Qdrant/Neo4j/LLM). Fail-open toàn bộ (Redis
+      lỗi → coi như cache miss/no-op, không crash `/chat` hay upload/delete). 8 test
+      mới (`test_response_cache.py` — **quan trọng nhất: user A không nhận được cache
+      của user B dù hỏi giống nhau**, khác `document_ids` không share cache, fail-open
+      khi Redis lỗi) + 180 test tổng cộng pass, mypy sạch. **Chưa làm:** wire vào
+      `chat_stream()` (SSE) — để session sau nếu cần, không silently bỏ qua.
+- [ ] **Task 5.3** — (Chưa làm — đã chọn exact-match trước ở Task 5.1, xem trên) Nếu
+      cần semantic cache (RedisVL): thêm bước "check cache" TRƯỚC `retriever_node` —
+      embed query, similarity search trong Redis vector index, threshold quyết định
+      cache hit/miss. Vẫn phải áp dụng owner_id filter (như Task 5.2) trong chính
+      bước similarity search này.
+- [x] **Task 5.4** — Invalidation. **Verified (2026-09-16):** `bump_version(owner_id)`
+      gọi trong `document_service.py` ở cả 3 điểm mutate tài liệu (`upload`/`delete`/
+      `reindex`) — bump NGAY lúc dispatch Celery task (không đợi task chạy xong, an
+      toàn hơn: window hẹp giữa dispatch và hoàn tất chỉ gây vài cache-miss thừa,
+      không gây stale answer). `delete`/`reindex` bump theo `doc.owner_id` (chủ tài
+      liệu thật, không phải người đang thao tác — quan trọng khi admin xoá/reindex hộ
+      tài liệu người khác). Bump 1 owner LUÔN kèm bump bucket admin (vì admin thấy
+      tất cả tài liệu). TTL 30 phút là lớp an toàn phụ.
 
 ## 6. Document Parsing — OCR, bảng biểu (P2)
 
@@ -167,10 +243,20 @@ mạnh hơn cache exact-match key/value đã thiết kế trong skill `prompt-en
 extraction chuyên dụng**. Đã ghi nhận gap này ở skill `ingestion` mục 1 (Parse + Structure)
 — task này là bước triển khai cụ thể cho gap đó.
 
-- [ ] **Task 6.1** — Detect PDF không có text layer (scan thuần): `extract_text()` trả
-      rỗng/quá ngắn so với số trang → hiện raise `ValueError` thẳng, fail cả document.
-      Sửa `run_ingestion_pipeline()` (`pipeline.py`) để detect case này TRƯỚC khi raise,
-      route sang nhánh OCR (Task 6.2) nếu có, giữ nguyên hành vi fail nếu không có OCR.
+- [x] **Task 6.1** — Detect PDF không có text layer, thông báo rõ hơn (chưa OCR).
+      **Verified (2026-09-16):** `extract_text()` (`pipeline.py`) — hàm DÙNG CHUNG
+      thật giữa `run_ingestion_pipeline()` (dead code, không ai gọi — xem
+      `grep run_ingestion_pipeline` chỉ khớp chính file đó) và `ingest_document()`
+      (Celery task production thật, `workers/tasks/ingestion.py`). Thêm heuristic:
+      trung bình < 20 ký tự/trang → raise `ScannedPdfError` (subclass `ValueError`,
+      không phá code cũ bắt `except ValueError`) với message rõ số trang + gợi ý
+      OCR ngoài — thay cho `ValueError("No text could be extracted...")` chung
+      chung trước đây (không phân biệt được với lỗi khác). KHÔNG tự OCR (Task 6.2
+      chưa quyết định công cụ) — giữ đúng hành vi "fail nếu không có OCR" như đề
+      xuất gốc, chỉ cải thiện chất lượng error message. 5 test mới
+      (`test_scanned_pdf_detection.py` — PDF blank thật qua `pypdf.PdfWriter` phải
+      raise, PDF đủ text không raise, ngay dưới ngưỡng phải raise) + 185 test tổng
+      cộng pass, mypy sạch.
 - [ ] **Task 6.2** — Chọn 1 công cụ parsing nâng cao: Docling (mã nguồn mở, chạy local,
       hỗ trợ OCR + table structure) hoặc Unstructured (SaaS API hoặc self-host) — cần
       quyết định trade-off chi phí/độ chính xác/latency ingest trước khi code, vì đây là

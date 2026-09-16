@@ -295,6 +295,8 @@ def _build_initial_state(
         api_key=None,
         base_url=None,
         image_data_urls=None,
+        dlp_flag=False,
+        dlp_reason=None,
     )
 
 

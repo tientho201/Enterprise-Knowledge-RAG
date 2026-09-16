@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 import unicodedata
 from datetime import date
 from pathlib import Path
@@ -25,6 +26,52 @@ from fpdf import FPDF
 PAGE_MARGIN = 15
 FONT = "Helvetica"
 
+# True khi build_pdf() tìm được 1 font TTF Unicode hỗ trợ tiếng Việt trên máy và đã
+# add_font() thành công — khi đó _latin1() KHÔNG được sanitize gì cả (font Unicode
+# render được dấu trực tiếp). False → fallback core font Helvetica/Courier
+# (Latin-1 only), _latin1() phải thật sự thay ký tự không encode được bằng '?'.
+_using_unicode_font = False
+
+# KHÔNG bundle font binary vào repo (tránh commit file .ttf nặng, không phải text) —
+# chỉ dò các font Unicode phổ biến ĐÃ CÓ SẴN trên máy (Windows/Linux/macOS). Nếu máy
+# không có font nào trong danh sách, PDF fallback về Helvetica không dấu — bản
+# Markdown song song (build_markdown) luôn có dấu đầy đủ, không phụ thuộc font.
+_UNICODE_FONT_CANDIDATES: list[tuple[str, str]] = [
+    (r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf"),
+    (r"C:\Windows\Fonts\tahoma.ttf", r"C:\Windows\Fonts\tahomabd.ttf"),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+    ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+     "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"),
+    ("/Library/Fonts/Arial.ttf", "/Library/Fonts/Arial Bold.ttf"),
+    ("/System/Library/Fonts/Supplemental/Arial.ttf",
+     "/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+]
+
+
+def _register_unicode_font(pdf: FPDF) -> str:
+    """Dò + đăng ký 1 font Unicode có sẵn trên máy (ưu tiên Arial/DejaVu Sans — đều
+    hỗ trợ đầy đủ tiếng Việt có dấu). Trả về tên font để dùng cho toàn bộ PDF; nếu
+    không tìm thấy font nào, trả lại "Helvetica" (core font cũ, không dấu) và in
+    cảnh báo ra stderr."""
+    global _using_unicode_font
+    for regular, bold in _UNICODE_FONT_CANDIDATES:
+        if Path(regular).is_file():
+            pdf.add_font("Unicode", "", regular)
+            pdf.add_font("Unicode", "B", bold if Path(bold).is_file() else regular)
+            pdf.add_font("Unicode", "I", regular)
+            _using_unicode_font = True
+            return "Unicode"
+    print(
+        "[generate_report] Khong tim thay font Unicode ho tro tieng Viet tren may nay "
+        "(da thu Arial/Tahoma/DejaVu Sans/Liberation Sans/Noto Sans) - PDF se dung "
+        "font Helvetica khong dau. Ban Markdown song song van co dau day du.",
+        file=sys.stderr,
+    )
+    return FONT
+
 
 def _slugify(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text)
@@ -34,10 +81,12 @@ def _slugify(text: str) -> str:
 
 
 def _latin1(text: str) -> str:
-    """fpdf2 core fonts (Helvetica/Courier) chỉ có bảng mã Latin-1 — không phải Unicode
-    đầy đủ nên KHÔNG render được tiếng Việt có dấu đúng font mặc định. Thay ký tự không
-    encode được bằng '?' để không crash — nếu cần tiếng Việt chuẩn, xem ghi chú add_font
-    trong SKILL.md (nhúng font TTF hỗ trợ Unicode, vd DejaVuSans)."""
+    """Khi có font Unicode (_using_unicode_font=True) — KHÔNG cần sanitize, trả
+    nguyên văn để giữ dấu tiếng Việt. Khi fallback Helvetica (core font, chỉ có
+    bảng mã Latin-1) — PHẢI thay ký tự không encode được bằng '?' để không crash
+    fpdf2 (FPDFUnicodeEncodingException) khi multi_cell wrap dòng dài."""
+    if _using_unicode_font:
+        return text
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
@@ -99,7 +148,10 @@ def _bullet(pdf: ReportPDF, text: str) -> None:
 
 
 def _code_block(pdf: ReportPDF, code: str) -> None:
-    pdf.set_font("Courier", "", 9.5)
+    # "Courier" (core font) chỉ có Latin-1 — nếu đang dùng font Unicode (mục đích
+    # chính là hiện dấu tiếng Việt), PHẢI dùng font đó ở đây luôn (mất tính monospace
+    # nhưng tránh crash khi lệnh/mô tả có tiếng Việt), không được hardcode Courier.
+    pdf.set_font(FONT if _using_unicode_font else "Courier", "", 9.5)
     pdf.set_fill_color(240, 240, 240)
     pdf.set_text_color(20, 20, 20)
     x, y = pdf.get_x(), pdf.get_y()
@@ -130,7 +182,9 @@ def _status_badge(pdf: ReportPDF, status: str) -> None:
 
 
 def build_pdf(data: dict[str, Any], out_path: Path) -> None:
+    global FONT
     pdf = ReportPDF(format="A4")
+    FONT = _register_unicode_font(pdf)
     pdf.set_auto_page_break(auto=True, margin=PAGE_MARGIN)
     pdf.set_margins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
     pdf.add_page()
@@ -152,7 +206,10 @@ def build_pdf(data: dict[str, Any], out_path: Path) -> None:
         for item in changed_files:
             path = item.get("path", "") if isinstance(item, dict) else str(item)
             change = item.get("change", "") if isinstance(item, dict) else ""
-            text = f"{path} — {change}" if change else path
+            # ASCII "-" (không phải em-dash "—") — fpdf2 core font Latin-1 wrap dòng dài
+            # qua nhiều dòng có thể gọi lại normalize_text trên đoạn chưa qua _latin1(),
+            # crash FPDFUnicodeEncodingException dù _latin1() đã sanitize câu gốc.
+            text = f"{path} - {change}" if change else path
             _bullet(pdf, text)
 
     test_steps = data.get("test_steps") or []
