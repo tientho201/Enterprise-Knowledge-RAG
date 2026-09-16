@@ -1,1 +1,14 @@
-.claude/settings.local.json
+# Local Claude/Cursor config (machine-specific)
+.claude/settings*.json
+.mcp.json
+
+# Generated task reports (local only)
+report/*
+
+# Local task checklists
+.claude/tasks/*
+
+# Python bytecode
+**/__pycache__/
+*.pyc
+*.pyo
