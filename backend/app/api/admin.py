@@ -7,8 +7,9 @@ from app.models.conversation import Conversation
 from app.models.document import Document
 from app.models.message import Message
 from app.models.user import User, UserRole
+from app.repositories.failed_task_repo import FailedTaskRepository
 from app.repositories.user_repo import UserRepository
-from app.schemas.admin import DashboardStats, UpdateUserRoleRequest
+from app.schemas.admin import DashboardStats, FailedTaskResponse, UpdateUserRoleRequest
 from app.schemas.auth import UserResponse
 from app.workers.celery_app import celery_app
 
@@ -77,6 +78,30 @@ async def list_jobs(user_id: CurrentUserIdDep, db: DbDep):
     active = inspect.active() or {}
     reserved = inspect.reserved() or {}
     return {"active": active, "reserved": reserved}
+
+
+@router.get("/failed-tasks", response_model=list[FailedTaskResponse])
+async def list_failed_tasks(
+    user_id: CurrentUserIdDep,
+    db: DbDep,
+    resolved: bool | None = None,
+    limit: int = 100,
+):
+    """Dead-letter queue (Task 2.2) — task Celery thất bại sau khi hết retry, ghi
+    bởi workers/dlq.py qua signal task_failure. `resolved=false` để chỉ xem task
+    chưa xử lý (mặc định trả cả 2)."""
+    await require_admin(user_id, db)
+    return await FailedTaskRepository(db).list_recent(limit=limit, resolved=resolved)
+
+
+@router.post("/failed-tasks/{failed_task_id}/resolve", response_model=FailedTaskResponse)
+async def resolve_failed_task(failed_task_id: str, user_id: CurrentUserIdDep, db: DbDep):
+    """Đánh dấu đã xử lý (vd đã replay thủ công) — KHÔNG xoá record, giữ lịch sử."""
+    await require_admin(user_id, db)
+    record = await FailedTaskRepository(db).mark_resolved(failed_task_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Failed task not found")
+    return record
 
 
 @router.get("/users", response_model=list[UserResponse])

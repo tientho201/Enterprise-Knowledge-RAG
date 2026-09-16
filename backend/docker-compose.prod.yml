@@ -80,6 +80,25 @@ services:
       redis:
         condition: service_healthy
 
+  # ── Flower (Celery monitoring UI, Task 3.3) ───
+  # Lệnh đã ghi sẵn trong backend/CLAUDE.md nhưng chưa từng chạy trong compose —
+  # chỉ thêm service, KHÔNG code mới. FLOWER_BASIC_AUTH bắt buộc đặt trong .env.prod
+  # (format "user:password") — thiếu biến này Flower expose không auth ra cổng
+  # 5555, rủi ro lộ thông tin task (args/kwargs có thể chứa document_id/query).
+  flower:
+    <<: [*common-env, *logging]
+    image: ${RAG_BACKEND_IMAGE:-ghcr.io/${GITHUB_REPOSITORY}/rag-backend:main}
+    container_name: rag_flower
+    command: >
+      uv run celery -A app.workers.celery_app flower
+        --port=5555
+        --basic-auth=${FLOWER_BASIC_AUTH}
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+
   # ── Redis ──────────────────────────────────
   redis:
     <<: *logging

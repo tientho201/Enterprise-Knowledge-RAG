@@ -34,6 +34,15 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     broker_use_ssl=_broker_use_ssl,
     redis_backend_use_ssl=_backend_use_ssl,
+    # Safety net GLOBAL — chỉ áp dụng cho task nào KHÔNG tự khai báo time_limit/
+    # soft_time_limit riêng (xem @celery_app.task(...) từng task trong
+    # workers/tasks/*.py — ingestion/sync/email đều đã set riêng, phù hợp độ nặng
+    # từng loại). Không có giới hạn nào trước đây → 1 task treo (OpenAI API hang,
+    # Neo4j deadlock) giữ worker slot vô thời hạn, không bao giờ nhường chỗ.
+    # soft: raise SoftTimeLimitExceeded (task tự cleanup nếu catch được) trước khi
+    # hard SIGKILL 60s sau.
+    task_soft_time_limit=540,
+    task_time_limit=600,
     task_routes={
         "app.workers.tasks.ingestion.*": {"queue": "ingestion"},
         "app.workers.tasks.sync.*": {"queue": "sync"},
@@ -42,3 +51,9 @@ celery_app.conf.update(
         "app.workers.tasks.email.*": {"queue": "sync"},
     },
 )
+
+# Đăng ký dead-letter queue (Task 2.2, xem workers/dlq.py) — bắt signal task_failure,
+# ghi task thất bại vào Postgres `failed_tasks`. Import 1 lần ở đây (không phải
+# task module nên không thuộc include=[...] ở trên) để signal receiver được đăng ký
+# ngay khi celery_app load, dù entrypoint là API hay worker process.
+from app.workers import dlq  # noqa: E402, F401

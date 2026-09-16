@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
     bind=True,
     max_retries=3,
     retry_backoff=True,
+    # Sync có thể kéo nhiều trang qua API bên ngoài — nhẹ hơn ingest_document (không
+    # embed/không ghi Neo4j) nhưng nặng hơn email, phụ thuộc độ trễ API Confluence.
+    soft_time_limit=180,
+    time_limit=240,
 )
 def sync_confluence(self, space_key: str) -> dict:
     """Sync all pages from a Confluence space."""
@@ -32,6 +36,8 @@ def sync_confluence(self, space_key: str) -> dict:
     bind=True,
     max_retries=3,
     retry_backoff=True,
+    soft_time_limit=180,
+    time_limit=240,
 )
 def sync_slack(self, channel_id: str) -> dict:
     """Sync messages from a Slack channel."""

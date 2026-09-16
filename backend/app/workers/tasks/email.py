@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
     bind=True,
     max_retries=3,
     retry_backoff=True,
+    # Task nhẹ nhất — 1 SMTP call ngắn, timeout(10) đã có sẵn ở smtplib.SMTP() bên
+    # dưới. Limit rộng hơn 1 chút để chừa margin cho retry/backoff, không phải vì
+    # tác vụ này cần lâu.
+    soft_time_limit=20,
+    time_limit=30,
 )
 def send_otp_email(self, to_email: str, otp_code: str, full_name: str | None = None) -> dict:
     if not settings.SMTP_HOST:

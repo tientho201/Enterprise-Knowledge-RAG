@@ -43,6 +43,12 @@ def _make_chunk_id(document_id: str, chunk_index: int) -> str:
     default_retry_delay=60,
     autoretry_for=(Exception,),
     retry_backoff=True,
+    # Task nặng nhất trong hệ thống: extract + chunk + embed (OpenAI, nhiều batch) +
+    # upsert Qdrant theo batch + ghi Neo4j (chunk graph + provision graph, có thể có
+    # thêm LLM call cho implicit-citation fallback). Văn bản luật dài (hàng trăm
+    # trang) có thể cần vài phút — set rộng hơn hẳn các task khác trong file này.
+    soft_time_limit=300,  # 5 phút — SoftTimeLimitExceeded, task có cơ hội thấy exception
+    time_limit=360,  # 6 phút — SIGKILL cứng nếu soft không đủ
 )
 def ingest_document(self, document_id: str, storage_path: str) -> dict:
     """
@@ -445,6 +451,8 @@ def ingest_document(self, document_id: str, storage_path: str) -> dict:
     bind=True,
     max_retries=3,
     retry_backoff=True,
+    soft_time_limit=60,
+    time_limit=90,
 )
 def delete_document_vectors(self, document_id: str, storage_path: str | None = None) -> dict:
     """
@@ -505,6 +513,10 @@ def delete_document_vectors(self, document_id: str, storage_path: str | None = N
     bind=True,
     max_retries=3,
     retry_backoff=True,
+    # Chỉ enqueue 1 chain (delete → ingest), không làm việc nặng trực tiếp — limit
+    # nhỏ, việc nặng thật sự nằm ở ingest_document (limit riêng ở trên).
+    soft_time_limit=30,
+    time_limit=60,
 )
 def reindex_document(self, document_id: str, storage_path: str) -> dict:
     """
@@ -539,6 +551,8 @@ def reindex_document(self, document_id: str, storage_path: str) -> dict:
     bind=True,
     max_retries=3,
     retry_backoff=True,
+    soft_time_limit=30,
+    time_limit=60,
 )
 def delete_chat_attachments(self, storage_paths: list[str]) -> dict:
     """Xóa ảnh chat khỏi S3 SAU KHI record `message_attachments` đã xóa ở DB (cascade

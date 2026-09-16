@@ -32,3 +32,19 @@ class JobResponse(BaseModel):
     status: str
     created_at: datetime | None
     result: Any | None
+
+
+class FailedTaskResponse(BaseModel):
+    id: str
+    task_name: str
+    celery_task_id: str
+    args: list | None
+    kwargs: dict | None
+    exception: str
+    traceback: str | None
+    retries: int
+    queue: str | None
+    resolved: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
