@@ -21,9 +21,15 @@ concurrency:
 
 jobs:
   # CI là quality gate bắt buộc cho đúng commit/tag sắp deploy.
+  # Phải truyền permissions đủ cho reusable workflow (checks/PRs) —
+  # caller không elevate được thì CI bị startup_failure.
   verify:
     name: Verify release
     uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
 
   # ─────────────────────────────────────────────
   # JOB 1: Build & push Docker image

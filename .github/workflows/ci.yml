@@ -19,10 +19,11 @@ env:
   PYTHON_VERSION: "3.11"
   UV_VERSION: "0.5.x"
 
+# Quyền mặc định tối thiểu — job cần elevate (checks / pull-requests) khai
+# báo riêng. Tránh workflow-level write vì CD gọi CI qua workflow_call không
+# được elevate quyền vượt caller → startup_failure.
 permissions:
   contents: read
-  checks: write # dorny/test-reporter tạo check run có chi tiết test fail
-  pull-requests: write # job ci-report comment tóm tắt lỗi lên PR
 
 defaults:
   run:
@@ -83,6 +84,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: write # dorny/test-reporter
 
     env:
       APP_ENV: test
@@ -135,7 +139,7 @@ jobs:
         if: (success() || failure()) && !cancelled()
         with:
           name: Unit tests
-          path: reports/unit-results.xml
+          path: backend/reports/unit-results.xml
           reporter: java-junit
           fail-on-error: false
 
@@ -150,6 +154,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write # dorny/test-reporter
 
     services:
       postgres:
@@ -253,7 +260,7 @@ jobs:
         if: (success() || failure()) && !cancelled()
         with:
           name: Integration tests
-          path: reports/integration-results.xml
+          path: backend/reports/integration-results.xml
           reporter: java-junit
           fail-on-error: false
 
@@ -291,6 +298,9 @@ jobs:
     if: always() && github.event_name == 'pull_request'
     needs: [lint, test-unit, test-integration, docker-build]
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write # comment tóm tắt lỗi lên PR
 
     steps:
       - name: Post or update PR failure summary
