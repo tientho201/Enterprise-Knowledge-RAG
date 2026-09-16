@@ -3,17 +3,25 @@ Generator node: produces final answer with citations.
 ONLY answers from retrieved context — never hallucinate.
 """
 
+from app.agents.dlp import check_bulk_extraction
+from app.agents.guardrail import BLOCKED_RESPONSE
+from app.agents.prompt_defense import INJECTION_DEFENSE_RULE, wrap_untrusted
 from app.agents.state import AgentState
 from app.llm.base import BaseLLM
 from app.llm.factory import get_llm_for_request
 from app.services.web_search import perform_web_search
 
-SYSTEM_PROMPT = """You are an enterprise knowledge assistant. Answer ONLY based on the provided context.
+SYSTEM_PROMPT = (
+    """You are an enterprise knowledge assistant. Answer ONLY based on the provided context.
 Rules:
 1. If context is insufficient, respond exactly: "Not found in documents."
 2. Every claim MUST be supported by a citation [SOURCE: chunk_id]
 3. Be concise and professional
-4. Do NOT hallucinate or invent information"""
+4. Do NOT hallucinate or invent information
+
+"""
+    + INJECTION_DEFENSE_RULE
+)
 
 CHITCHAT_PROMPT = """You are a helpful enterprise assistant. Respond to this conversational message naturally.
 Message: {query}"""
@@ -73,6 +81,11 @@ def _get_llm(state: AgentState) -> BaseLLM:
 async def generator_node(state: AgentState) -> AgentState:
     intent = state.get("intent", "rag")
 
+    if intent == "blocked":
+        # Guardrail (app/agents/guardrail.py) đã chặn TRƯỚC router — không gọi LLM,
+        # tránh cả chi phí lẫn rủi ro model bị dụ trả lời câu injection rõ ràng.
+        return {**state, "final_answer": BLOCKED_RESPONSE, "citations": []}
+
     if intent == "out_of_scope":
         return {**state, "final_answer": OUT_OF_SCOPE_RESPONSE, "citations": []}
 
@@ -97,19 +110,20 @@ async def generator_node(state: AgentState) -> AgentState:
         # không match gì) → vẫn gọi LLM với ảnh, KHÔNG rơi thẳng vào "not found" chỉ vì
         # thiếu context text — ảnh tự nó đủ để trả lời được nhiều câu hỏi.
         user_text = (
-            f"Context:\n{context}\n\nQuestion: {state['query']}"
+            f"{wrap_untrusted('context', context)}\n\n{wrap_untrusted('user_query', state['query'])}"
             if has_rag_context
-            else state["query"]
+            else wrap_untrusted("user_query", state["query"])
         )
         llm = _get_llm(state)
-        system_prompt = state.get("system_prompt") or SYSTEM_PROMPT
-        rag_answer = await llm.chat(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": _build_user_content(user_text, state)},
-            ],
-            temperature=0.1,
-        )
+        # Lớp 1 (SYSTEM_PROMPT, bất biến — luôn có) + Lớp 2 (developer_prompt tùy biến từ
+        # panel Cấu hình, CỘNG THÊM chứ không thay thế — nếu thay thế, safety rules/injection
+        # defense của Lớp 1 biến mất hoàn toàn khỏi request).
+        developer_prompt = state.get("system_prompt")
+        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if developer_prompt:
+            messages.append({"role": "system", "content": developer_prompt})
+        messages.append({"role": "user", "content": _build_user_content(user_text, state)})
+        rag_answer = await llm.chat(messages=messages, temperature=0.1)
 
     # Detect if context/image is empty or LLM says not found
     is_not_found = (
@@ -132,14 +146,22 @@ async def generator_node(state: AgentState) -> AgentState:
                     )
                 web_context = "\n\n---\n\n".join(web_context_parts)
 
-                web_system_prompt = """You are an enterprise knowledge assistant. Answer based on the provided web search context.
+                web_system_prompt = (
+                    """You are an enterprise knowledge assistant. Answer based on the provided web search context.
 Rules:
 1. If context is insufficient to answer, respond exactly: "Không tìm thấy trong tài liệu."
 2. Be concise and professional
-3. Do NOT hallucinate or invent information"""
+3. Do NOT hallucinate or invent information
+
+"""
+                    + INJECTION_DEFENSE_RULE
+                )
 
                 llm = _get_llm(state)
-                user_message = f"Web Context:\n{web_context}\n\nQuestion: {state['query']}"
+                user_message = (
+                    f"{wrap_untrusted('document', web_context)}\n\n"
+                    f"{wrap_untrusted('user_query', state['query'])}"
+                )
                 web_answer = await llm.chat(
                     messages=[
                         {"role": "system", "content": web_system_prompt},
@@ -183,4 +205,21 @@ Rules:
         else:
             return {**state, "final_answer": "Không tìm thấy trong tài liệu.", "citations": []}
 
-    return {**state, "final_answer": rag_answer, "citations": citations}
+    # DLP tối thiểu (xem agents/dlp.py) — chỉ log, KHÔNG chặn câu trả lời hợp lệ.
+    dlp_result = check_bulk_extraction(rag_answer, state.get("reranked_results", []))
+    if dlp_result.flagged:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "DLP: possible bulk extraction detected (owner_id=%s): %s",
+            state.get("owner_id"),
+            dlp_result.reason,
+        )
+
+    return {
+        **state,
+        "final_answer": rag_answer,
+        "citations": citations,
+        "dlp_flag": dlp_result.flagged,
+        "dlp_reason": dlp_result.reason,
+    }

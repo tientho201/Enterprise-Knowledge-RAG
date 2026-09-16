@@ -47,3 +47,8 @@ class AgentState(TypedDict):
     # Data URI base64 sẵn sàng đưa vào content part {"type":"image_url","image_url":{"url":...}}.
     # None/rỗng → hành vi y hệt trước đây (regression-safe).
     image_data_urls: list[str] | None
+    # DLP tối thiểu (xem agents/dlp.py) — generator_node set sau khi có final_answer.
+    # True = câu trả lời có dấu hiệu "bulk extraction" (nguyên văn dài từ nhiều tài liệu).
+    # KHÔNG chặn — chat_service.py dùng field này để ghi audit log riêng.
+    dlp_flag: bool
+    dlp_reason: str | None
