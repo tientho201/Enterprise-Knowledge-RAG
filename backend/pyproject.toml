@@ -30,6 +30,8 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "langchain-text-splitters>=1.1.2",
     "alembic>=1.13.0",
+    "prometheus-fastapi-instrumentator>=8.1.0",
+    "flower>=2.1.0",
 ]
 
 [project.optional-dependencies]

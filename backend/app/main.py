@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
 
 from app.api import admin, audit_logs, auth, chat, documents, graph
@@ -52,6 +53,15 @@ def create_app() -> FastAPI:
     app.include_router(admin.router, prefix=settings.API_V1_PREFIX)
     app.include_router(audit_logs.router, prefix=settings.API_V1_PREFIX)
     app.include_router(graph.router, prefix=settings.API_V1_PREFIX)
+
+    # Prometheus metrics (Task 3.3, .claude/tasks/production-ops-gaps.md mục 3) —
+    # expose /metrics: request count/latency theo route+status, không cần code thủ
+    # công. exclude "/metrics" khỏi chính bộ đếm của nó (tránh nhiễu). Không bọc
+    # /health — endpoint đó gọi mỗi vài giây bởi healthcheck, sẽ làm nhiễu p95/p99
+    # latency thật của traffic user.
+    Instrumentator(excluded_handlers=["/metrics", "/health"]).instrument(app).expose(
+        app, endpoint="/metrics", include_in_schema=False
+    )
 
     @app.get("/health", tags=["health"])
     async def health_check():
