@@ -161,3 +161,68 @@ jobs:
         run: |
           echo "DEPLOY FAILED — commit ${{ github.sha }}"
           exit 1
+
+  # ─────────────────────────────────────────────
+  # Overview — tab Summary trên Actions: luồng CI/CD + chỗ lỗi
+  # ─────────────────────────────────────────────
+  cd-overview:
+    name: CD Overview
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [verify, build-push, deploy]
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Write CD Overview to Actions Summary
+        env:
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          BUILD_RESULT: ${{ needs.build-push.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+        run: |
+          icon() {
+            case "$1" in
+              success) echo "✅" ;;
+              skipped) echo "⏭️" ;;
+              cancelled) echo "🚫" ;;
+              failure) echo "❌" ;;
+              *) echo "❓" ;;
+            esac
+          }
+
+          V=$(icon "$VERIFY_RESULT")
+          B=$(icon "$BUILD_RESULT")
+          D=$(icon "$DEPLOY_RESULT")
+
+          if [ "$VERIFY_RESULT" = "failure" ] || [ "$BUILD_RESULT" = "failure" ] || [ "$DEPLOY_RESULT" = "failure" ]; then
+            TITLE="## ❌ CD — Overview (có lỗi)"
+          else
+            TITLE="## ✅ CD — Overview"
+          fi
+
+          {
+            echo "$TITLE"
+            echo ""
+            echo "| | Stage | Status | Ý nghĩa / xem lỗi ở đâu |"
+            echo "|---|---|---|---|"
+            echo "| $V | **Verify release (CI)** | \`$VERIFY_RESULT\` | Chạy full Backend CI (lint → test → docker). Fail → mở job con dưới *Verify release* |"
+            echo "| $B | **Build & push image** | \`$BUILD_RESULT\` | Push image lên GHCR. Fail → log *Build & push image* |"
+            echo "| $D | **Deploy** | \`$DEPLOY_RESULT\` | SSH deploy (chỉ chạy khi \`DEPLOY_ENABLED=true\`, hiện: \`${DEPLOY_ENABLED:-unset}\`) |"
+            echo ""
+            echo "### Luồng CI/CD"
+            echo '```mermaid'
+            echo 'flowchart LR'
+            echo "  verify[\"$V Verify CI\"] --> build[\"$B Build & push\"]"
+            echo "  build --> deploy[\"$D Deploy\"]"
+            echo '```'
+            echo ""
+            echo "### Cách đọc nhanh"
+            echo "1. Mở run này → tab **Summary** (trang này)."
+            echo "2. Job đỏ đầu tiên trong chuỗi = chỗ gãy."
+            echo "3. Nếu **Verify** đỏ: vào từng job con (*Lint*, *Unit tests*, …) — CI Overview cũng có Summary riêng khi chạy qua reusable workflow."
+            echo "4. **Deploy** \`skipped\` là bình thường khi chưa bật biến \`DEPLOY_ENABLED\`."
+            echo ""
+            echo "Commit: \`${GITHUB_SHA:0:7}\` · Branch/tag: \`$GITHUB_REF_NAME\` · Actor: \`$GITHUB_ACTOR\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -290,77 +290,104 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ─────────────────────────────────────────────
-  # JOB 5: PR comment — tóm tắt job fail (chỉ trên pull_request)
+  # JOB 5: Overview — Summary tab trên Actions (+ comment PR khi fail)
+  # Mở run → tab "Summary" để xem luồng CI và job nào lỗi.
   # ─────────────────────────────────────────────
-  ci-report:
-    name: PR CI report
+  ci-overview:
+    name: CI Overview
     runs-on: ubuntu-latest
-    if: always() && github.event_name == 'pull_request'
+    if: always()
     needs: [lint, test-unit, test-integration, docker-build]
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: write # comment tóm tắt lỗi lên PR
+      pull-requests: write # comment PR khi fail (bỏ qua nếu không phải pull_request)
 
     steps:
-      - name: Post or update PR failure summary
+      - name: Write Actions Summary overview
         uses: actions/github-script@v7
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          UNIT_RESULT: ${{ needs.test-unit.result }}
+          INTEGRATION_RESULT: ${{ needs.test-integration.result }}
+          DOCKER_RESULT: ${{ needs.docker-build.result }}
         with:
           script: |
-            const marker = '<!-- backend-ci-report -->';
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const icon = (r) =>
+              ({ success: '✅', skipped: '⏭️', cancelled: '🚫', failure: '❌' }[r] || '❓');
 
             const jobs = [
-              { name: 'Lint & static checks', result: '${{ needs.lint.result }}' },
-              { name: 'Unit tests', result: '${{ needs.test-unit.result }}' },
-              { name: 'Integration tests', result: '${{ needs.test-integration.result }}' },
-              { name: 'Docker build', result: '${{ needs.docker-build.result }}' },
+              { id: 'lint', name: 'Lint & static checks', result: process.env.LINT_RESULT, tip: 'Ruff / format / mypy — xem log job lint hoặc annotation trên Files changed' },
+              { id: 'test-unit', name: 'Unit tests', result: process.env.UNIT_RESULT, tip: 'Checks → Unit tests (JUnit) hoặc artifact unit-test-results' },
+              { id: 'test-integration', name: 'Integration tests', result: process.env.INTEGRATION_RESULT, tip: 'Checks → Integration tests hoặc artifact integration-test-results' },
+              { id: 'docker-build', name: 'Docker build', result: process.env.DOCKER_RESULT, tip: 'Log job Docker build (Dockerfile / uv.lock)' },
             ];
-
-            const icon = (result) => {
-              if (result === 'success') return '✅';
-              if (result === 'skipped') return '⏭️';
-              if (result === 'cancelled') return '🚫';
-              return '❌';
-            };
 
             const failed = jobs.filter((j) => j.result === 'failure');
             const allGreen = jobs.every((j) => j.result === 'success' || j.result === 'skipped');
+            const title = allGreen ? '## ✅ Backend CI — Overview' : '## ❌ Backend CI — Overview (có lỗi)';
 
             const rows = jobs
-              .map((j) => `| ${icon(j.result)} ${j.name} | \`${j.result}\` |`)
+              .map((j) => `| ${icon(j.result)} | **${j.name}** | \`${j.result}\` | ${j.tip} |`)
               .join('\n');
 
-            let body;
-            if (allGreen) {
-              body = [
-                marker,
-                '## ✅ Backend CI passed',
-                '',
-                'All checks completed successfully.',
-                '',
-                `[View workflow run](${runUrl})`,
-              ].join('\n');
-            } else {
-              const failedNames = failed.map((j) => j.name).join(', ');
-              body = [
-                marker,
-                '## ❌ Backend CI failed',
-                '',
-                `Failed job(s): **${failedNames || 'unknown'}**`,
-                '',
-                '| Job | Status |',
-                '|---|---|',
-                rows,
-                '',
-                '**Where to look**',
-                '- **Lint** — tab *Files changed* may show Ruff annotations inline.',
-                '- **Unit / Integration tests** — open the *Checks* tab → *Unit tests* / *Integration tests* for failed test names.',
-                '- **Docker build** — open the workflow log for the *Docker build* job.',
-                '',
-                `[View full workflow run](${runUrl})`,
-              ].join('\n');
+            const mermaid = [
+              '```mermaid',
+              'flowchart TD',
+              `  lint["${icon(process.env.LINT_RESULT)} Lint"]`,
+              `  unit["${icon(process.env.UNIT_RESULT)} Unit tests"]`,
+              `  integ["${icon(process.env.INTEGRATION_RESULT)} Integration"]`,
+              `  docker["${icon(process.env.DOCKER_RESULT)} Docker build"]`,
+              '  lint --> unit',
+              '  lint --> integ',
+              '  unit --> docker',
+              '  integ --> docker',
+              '```',
+            ].join('\n');
+
+            const where = failed.length
+              ? [
+                  '',
+                  '### Lỗi ở đâu?',
+                  ...failed.map((j) => `- **${j.name}** (\`${j.result}\`) → ${j.tip}`),
+                ].join('\n')
+              : '\nTất cả job đã pass (hoặc skip).';
+
+            const summary = [
+              title,
+              '',
+              `| | Job | Status | Cách xem lỗi |`,
+              `|---|---|---|---|`,
+              rows,
+              '',
+              '### Luồng CI',
+              mermaid,
+              where,
+              '',
+              `Event: \`${context.eventName}\` · Ref: \`${context.ref}\` · SHA: \`${context.sha.slice(0, 7)}\``,
+            ].join('\n');
+
+            await core.summary.addRaw(summary).write();
+
+            // PR comment chỉ khi fail trên pull_request
+            if (context.eventName !== 'pull_request' || allGreen) {
+              return;
             }
+
+            const marker = '<!-- backend-ci-report -->';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              marker,
+              '## ❌ Backend CI failed',
+              '',
+              `Failed: **${failed.map((j) => j.name).join(', ')}**`,
+              '',
+              '| Job | Status |',
+              '|---|---|',
+              jobs.map((j) => `| ${icon(j.result)} ${j.name} | \`${j.result}\` |`).join('\n'),
+              '',
+              `Xem **Summary** trên [workflow run](${runUrl}) để biết lỗi ở đâu.`,
+            ].join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -368,11 +395,9 @@ jobs:
               issue_number: context.issue.number,
               per_page: 100,
             });
-
-            const existing = comments.find((c) =>
-              c.user.type === 'Bot' && c.body.includes(marker),
+            const existing = comments.find(
+              (c) => c.user.type === 'Bot' && c.body.includes(marker),
             );
-
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -380,8 +405,7 @@ jobs:
                 comment_id: existing.id,
                 body,
               });
-            } else if (!allGreen) {
-              // Chỉ tạo comment mới khi fail — tránh spam PR khi CI xanh.
+            } else {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
