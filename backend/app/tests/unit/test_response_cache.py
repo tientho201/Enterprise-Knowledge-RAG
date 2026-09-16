@@ -68,8 +68,12 @@ async def test_set_then_get_returns_same_payload(fake_redis):
 async def test_different_owner_id_does_not_share_cache(fake_redis):
     """BAT BUOC owner_id trong key — day la dieu kien an toan quan trong nhat cua
     module nay. User A khong duoc nhan cache cua user B du cung 1 cau hoi."""
-    payload_a = {"final_answer": "answer for A", "citations": [], "intent": "rag",
-                 "confidence_score": 1.0}
+    payload_a = {
+        "final_answer": "answer for A",
+        "citations": [],
+        "intent": "rag",
+        "confidence_score": 1.0,
+    }
     await response_cache.set_cached_answer("cau hoi giong nhau", "user-a", None, payload_a)
 
     result_for_b = await response_cache.get_cached_answer("cau hoi giong nhau", "user-b", None)
@@ -87,8 +91,12 @@ async def test_different_document_ids_do_not_share_cache(fake_redis):
 
 @pytest.mark.asyncio
 async def test_bump_version_invalidates_old_cache_entry(fake_redis):
-    payload = {"final_answer": "old answer", "citations": [], "intent": "rag",
-               "confidence_score": 1.0}
+    payload = {
+        "final_answer": "old answer",
+        "citations": [],
+        "intent": "rag",
+        "confidence_score": 1.0,
+    }
     await response_cache.set_cached_answer("q", "user-a", None, payload)
     assert await response_cache.get_cached_answer("q", "user-a", None) == payload
 
@@ -101,8 +109,12 @@ async def test_bump_version_invalidates_old_cache_entry(fake_redis):
 async def test_bump_version_for_owner_also_invalidates_admin_bucket(fake_redis):
     """Admin thay TAT CA tai lieu — 1 doc cua bat ky owner nao doi cung phai lam
     stale cache cua admin (owner_id=None), khong chi cache cua chinh owner do."""
-    admin_payload = {"final_answer": "admin cached", "citations": [], "intent": "rag",
-                      "confidence_score": 1.0}
+    admin_payload = {
+        "final_answer": "admin cached",
+        "citations": [],
+        "intent": "rag",
+        "confidence_score": 1.0,
+    }
     await response_cache.set_cached_answer("q", None, None, admin_payload)
     assert await response_cache.get_cached_answer("q", None, None) == admin_payload
 
