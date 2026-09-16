@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation import Conversation
 from app.models.document import DocumentType
+from app.rag.response_cache import bump_version
 from app.repositories.audit_log_repo import AuditLogRepository
 from app.repositories.conversation_repo import ConversationRepository
 from app.repositories.document_repo import DocumentRepository
@@ -102,6 +103,13 @@ class DocumentService:
 
         ingest_document.delay(doc.id, object_name)
 
+        # 5. Invalidate Response Cache (Task 5.2) — tài liệu mới có thể trả lời
+        # được câu hỏi mà trước đây cache trả "Không tìm thấy trong tài liệu.".
+        # Bump NGAY lúc dispatch (không đợi ingest xong) — an toàn hơn: window hẹp
+        # giữa lúc bump và ingest hoàn tất chỉ gây 1 vài cache-miss thừa, không gây
+        # stale answer nào.
+        await bump_version(user_id)
+
         return DocumentResponse.model_validate(doc)
 
     # ── Ownership guard (data isolation) ──────────────────────────────────────
@@ -184,6 +192,10 @@ class DocumentService:
 
         delete_document_vectors.delay(doc_id, storage_path)
 
+        # 4. Invalidate Response Cache (Task 5.2) — câu trả lời cache cũ trích dẫn
+        # tài liệu vừa xoá giờ là stale data, nguy hiểm hơn cache miss.
+        await bump_version(doc.owner_id)
+
     # ── Reindex ───────────────────────────────────────────────────────────────
 
     async def reindex(self, doc_id: str, user_id: str, is_admin: bool = False) -> DocumentResponse:
@@ -209,6 +221,10 @@ class DocumentService:
         from app.workers.tasks.ingestion import reindex_document
 
         reindex_document.delay(doc_id, doc.storage_path)
+
+        # Invalidate Response Cache (Task 5.2) — nội dung tài liệu sắp đổi, câu trả
+        # lời cache cũ dựa trên nội dung trước reindex là stale data.
+        await bump_version(doc.owner_id)
 
         return DocumentResponse.model_validate(doc)
 

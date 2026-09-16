@@ -9,8 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import get_agent_graph, get_retrieval_graph
 from app.agents.state import AgentState
+from app.analytics.tracker import tracker
 from app.models.message import MessageRole
 from app.models.message_attachment import MessageAttachment
+from app.rag.response_cache import get_cached_answer, set_cached_answer
 from app.repositories.conversation_repo import ConversationRepository
 from app.repositories.message_attachment_repo import MessageAttachmentRepository
 from app.schemas.chat import (
@@ -119,40 +121,105 @@ class ChatService:
         # Admin → owner_id=None → không filter, truy hồi mọi chunk. Mirror document_service.
         owner_id = None if is_admin else user_id
         graph = get_agent_graph()
-        initial_state: AgentState = {
-            "query": message,
-            "intent": "",
-            "rewritten_query": None,
-            "dense_results": [],
-            "graph_results": [],
-            "merged_results": [],
-            "reranked_results": [],
-            "citations": [],
-            "final_answer": None,
-            "confidence_score": 0.0,
-            "retry_count": 0,
-            "search_tool": search_tool,
-            "document_ids": document_ids,
-            "owner_id": owner_id,
-            "top_k": top_k,
-            "similarity_threshold": similarity_threshold,
-            "system_prompt": system_prompt,
-            "model": model,
-            "api_key": api_key,
-            "base_url": base_url,
-            "image_data_urls": image_data_urls,
-            "search_mode": search_mode,
-            "citation_graph_path": [],
-            "citation_graph_nodes": [],
-            "suggested_documents": [],
-        }
-        try:
-            final_state = await graph.ainvoke(initial_state)
-        except openai.APIError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=_friendly_llm_error(exc, model, api_key, has_image=bool(image_data_urls)),
-            ) from exc
+
+        # Response Cache exact-match (Task 5.2, xem app/rag/response_cache.py) — chỉ
+        # áp dụng case "đơn giản" (không web search/ảnh/custom prompt/BYOM/advanced
+        # mode), vì các case đó có biến số không nằm trong cache key, cache sẽ trả
+        # sai nếu tái dùng. owner_id LUÔN có trong key (bên trong response_cache) —
+        # bắt buộc để không lộ câu trả lời chéo user.
+        cache_eligible = (
+            not search_tool
+            and not image_data_urls
+            and not system_prompt
+            and not model
+            and not api_key
+            and not base_url
+            and (search_mode or "hybrid") != "advanced"
+        )
+        cached = (
+            await get_cached_answer(message, owner_id, document_ids) if cache_eligible else None
+        )
+
+        final_state: dict
+        if cached is not None:
+            final_state = {
+                "final_answer": cached.get("final_answer"),
+                "citations": cached.get("citations", []),
+                "intent": cached.get("intent", "rag"),
+                "confidence_score": cached.get("confidence_score", 0.0),
+                "reranked_results": [],
+                "citation_graph_path": [],
+                "citation_graph_nodes": [],
+                "suggested_documents": [],
+            }
+            async with tracker.measure(message) as metrics:
+                metrics.intent = final_state["intent"]
+                metrics.confidence_score = final_state["confidence_score"]
+                metrics.had_citations = bool(final_state["citations"])
+                metrics.metadata["cache_hit"] = True
+        else:
+            initial_state: AgentState = {
+                "query": message,
+                "intent": "",
+                "rewritten_query": None,
+                "dense_results": [],
+                "graph_results": [],
+                "merged_results": [],
+                "reranked_results": [],
+                "citations": [],
+                "final_answer": None,
+                "confidence_score": 0.0,
+                "retry_count": 0,
+                "search_tool": search_tool,
+                "document_ids": document_ids,
+                "owner_id": owner_id,
+                "top_k": top_k,
+                "similarity_threshold": similarity_threshold,
+                "system_prompt": system_prompt,
+                "model": model,
+                "api_key": api_key,
+                "base_url": base_url,
+                "image_data_urls": image_data_urls,
+                "search_mode": search_mode,
+                "citation_graph_path": [],
+                "citation_graph_nodes": [],
+                "suggested_documents": [],
+                "dlp_flag": False,
+                "dlp_reason": None,
+            }
+            # Observability (Task 3.1, xem app/analytics/tracker.py) — bọc toàn bộ
+            # graph run, log QUERY_METRICS (latency/intent/confidence/chunks) sau
+            # mỗi request. measure() tự bắt exception (kể cả HTTPException raise
+            # bên trong) để ghi metrics.error trước khi re-raise — không nuốt lỗi,
+            # không đổi hành vi cũ.
+            async with tracker.measure(message) as metrics:
+                try:
+                    final_state = await graph.ainvoke(initial_state)
+                except openai.APIError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=_friendly_llm_error(
+                            exc, model, api_key, has_image=bool(image_data_urls)
+                        ),
+                    ) from exc
+                metrics.intent = final_state.get("intent") or ""
+                metrics.confidence_score = final_state.get("confidence_score") or 0.0
+                metrics.retrieved_chunks = len(final_state.get("reranked_results") or [])
+                metrics.had_citations = bool(final_state.get("citations"))
+
+            if cache_eligible:
+                await set_cached_answer(
+                    message,
+                    owner_id,
+                    document_ids,
+                    {
+                        "final_answer": final_state.get("final_answer"),
+                        "citations": final_state.get("citations", []),
+                        "intent": final_state.get("intent"),
+                        "confidence_score": final_state.get("confidence_score"),
+                    },
+                )
+
         answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."
         citations = final_state.get("citations", [])
         citation_graph_path = final_state.get("citation_graph_path", [])
@@ -180,8 +247,14 @@ class ChatService:
                     )
                     self.db.add(citation_record)
 
-        # Save audit log to DB/Supabase
+        # Save audit log to DB/Supabase — kèm cờ DLP (agents/dlp.py) nếu generator_node
+        # phát hiện dấu hiệu bulk extraction, để admin có thể tra soát qua audit log.
         from app.repositories.audit_log_repo import AuditLogRepository
+
+        extra_data: dict = {"details": f"Trích dẫn: {len(citations)}"}
+        if final_state.get("dlp_flag"):
+            extra_data["dlp_flag"] = True
+            extra_data["dlp_reason"] = final_state.get("dlp_reason")
 
         audit_repo = AuditLogRepository(self.db)
         await audit_repo.create(
@@ -189,7 +262,7 @@ class ChatService:
             action=f'Chạy truy vấn RAG: "{message[:30] + "..." if len(message) > 30 else message}"',
             resource_type="query",
             resource_id=conv.id,
-            extra_data={"details": f"Trích dẫn: {len(citations)}"},
+            extra_data=extra_data,
         )
 
         return ChatResponse(
@@ -207,7 +280,14 @@ class ChatService:
         )
 
     async def _persist_assistant(
-        self, conv_id: str, user_id: str, message: str, answer: str, citations: list[dict]
+        self,
+        conv_id: str,
+        user_id: str,
+        message: str,
+        answer: str,
+        citations: list[dict],
+        dlp_flag: bool = False,
+        dlp_reason: str | None = None,
     ):
         """Lưu message assistant + citations + audit log (dùng chung cho luồng stream)."""
         content_to_save = answer
@@ -225,12 +305,17 @@ class ChatService:
 
         from app.repositories.audit_log_repo import AuditLogRepository
 
+        extra_data: dict = {"details": f"Trích dẫn: {len(citations)}"}
+        if dlp_flag:
+            extra_data["dlp_flag"] = True
+            extra_data["dlp_reason"] = dlp_reason
+
         await AuditLogRepository(self.db).create(
             user_id=user_id,
             action=f'Chạy truy vấn RAG: "{message[:30] + "..." if len(message) > 30 else message}"',
             resource_type="query",
             resource_id=conv_id,
-            extra_data={"details": f"Trích dẫn: {len(citations)}"},
+            extra_data=extra_data,
         )
         return assistant_msg
 
@@ -312,47 +397,88 @@ class ChatService:
                 "citation_graph_path": [],
                 "citation_graph_nodes": [],
                 "suggested_documents": [],
+                "dlp_flag": False,
+                "dlp_reason": None,
             }
-            state = await get_retrieval_graph().ainvoke(initial_state)
+            # Observability (Task 3.1) — bọc retrieval+generation, mirror chat() không-stream.
+            # async with quanh generator OK dù hàm này có yield bên trong (async generator
+            # method) — measure() vẫn tự bắt exception + log latency khi thoát block.
+            async with tracker.measure(message) as metrics:
+                state = await get_retrieval_graph().ainvoke(initial_state)
 
-            from app.agents.generator import SYSTEM_PROMPT, _build_context
-            from app.llm.factory import get_llm_for_request
+                from app.agents.dlp import check_bulk_extraction
+                from app.agents.generator import SYSTEM_PROMPT, _build_context
+                from app.agents.prompt_defense import wrap_untrusted
+                from app.llm.factory import get_llm_for_request
 
-            intent = state.get("intent", "rag")
-            context, citations = _build_context(state)
+                intent = state.get("intent", "rag")
+                context, citations = _build_context(state)
+                dlp_flag = False
+                dlp_reason: str | None = None
+                metrics.intent = intent
+                metrics.confidence_score = state.get("confidence_score") or 0.0
+                metrics.retrieved_chunks = len(state.get("reranked_results") or [])
 
-            # Có ảnh → luôn đi qua generator_node (nhánh else) để dùng chung logic dựng
-            # content đa phương thức (text + image_url) thay vì lặp lại ở đây; tránh
-            # phải viết + bảo trì multimodal streaming riêng cho nhánh fast-path.
-            if intent == "rag" and context and not has_image:
-                # Happy path: stream câu trả lời RAG token-by-token
-                messages = [
-                    {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {message}"},
-                ]
-                llm = get_llm_for_request(model=model, api_key=api_key, base_url=base_url)
-                buffer = ""
-                async for token in llm.stream_chat(messages=messages, temperature=0.1):
-                    buffer += token
-                    yield sse({"type": "delta", "text": token})
-                answer = buffer.strip() or "Không tìm thấy trong tài liệu."
-                if (
-                    "Not found in documents." in answer
-                    or "Không tìm thấy trong tài liệu." in answer
-                ):
-                    citations = []
-            else:
-                # chitchat / out_of_scope / không có context / web fallback / có ảnh
-                # → tái dùng generator (multimodal-aware)
-                from app.agents.generator import generator_node
+                # Có ảnh → luôn đi qua generator_node (nhánh else) để dùng chung logic dựng
+                # content đa phương thức (text + image_url) thay vì lặp lại ở đây; tránh
+                # phải viết + bảo trì multimodal streaming riêng cho nhánh fast-path.
+                if intent == "rag" and context and not has_image:
+                    # Happy path: stream câu trả lời RAG token-by-token. Lớp 1 (SYSTEM_PROMPT,
+                    # bất biến) + Lớp 2 (system_prompt tùy biến, CỘNG THÊM) — mirror đúng
+                    # generator_node, xem app/agents/prompt_defense.py.
+                    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"{wrap_untrusted('context', context)}\n\n"
+                                f"{wrap_untrusted('user_query', message)}"
+                            ),
+                        }
+                    )
+                    llm = get_llm_for_request(model=model, api_key=api_key, base_url=base_url)
+                    buffer = ""
+                    async for token in llm.stream_chat(messages=messages, temperature=0.1):
+                        buffer += token
+                        yield sse({"type": "delta", "text": token})
+                    answer = buffer.strip() or "Không tìm thấy trong tài liệu."
+                    if (
+                        "Not found in documents." in answer
+                        or "Không tìm thấy trong tài liệu." in answer
+                    ):
+                        citations = []
+                    else:
+                        # DLP tối thiểu (xem agents/dlp.py) — mirror generator_node, chỉ log.
+                        dlp_result = check_bulk_extraction(
+                            answer, state.get("reranked_results", [])
+                        )
+                        dlp_flag, dlp_reason = dlp_result.flagged, dlp_result.reason
+                        if dlp_flag:
+                            import logging
 
-                final_state = await generator_node(state)
-                answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."
-                citations = final_state.get("citations", [])
-                yield sse({"type": "delta", "text": answer})
+                            logging.getLogger(__name__).warning(
+                                "DLP: possible bulk extraction detected (owner_id=%s): %s",
+                                owner_id,
+                                dlp_reason,
+                            )
+                else:
+                    # chitchat / out_of_scope / không có context / web fallback / có ảnh
+                    # → tái dùng generator (multimodal-aware)
+                    from app.agents.generator import generator_node
+
+                    final_state = await generator_node(state)
+                    answer = final_state.get("final_answer") or "Không tìm thấy trong tài liệu."
+                    citations = final_state.get("citations", [])
+                    dlp_flag = final_state.get("dlp_flag", False)
+                    dlp_reason = final_state.get("dlp_reason")
+                    yield sse({"type": "delta", "text": answer})
+
+                metrics.had_citations = bool(citations)
 
             assistant_msg = await self._persist_assistant(
-                conv.id, user_id, message, answer, citations
+                conv.id, user_id, message, answer, citations, dlp_flag, dlp_reason
             )
             await self.db.commit()
 
