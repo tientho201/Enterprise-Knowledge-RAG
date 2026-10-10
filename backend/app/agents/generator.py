@@ -5,6 +5,7 @@ ONLY answers from retrieved context — never hallucinate.
 
 from app.agents.dlp import check_bulk_extraction
 from app.agents.guardrail import BLOCKED_RESPONSE
+from app.agents.history import DEFAULT_MAX_CHARS, HISTORY_DEFENSE_RULE, render_history
 from app.agents.prompt_defense import INJECTION_DEFENSE_RULE, wrap_untrusted
 from app.agents.state import AgentState
 from app.llm.base import BaseLLM
@@ -25,6 +26,34 @@ Rules:
 
 CHITCHAT_PROMPT = """You are a helpful enterprise assistant. Respond to this conversational message naturally.
 Message: {query}"""
+
+# Chỉ được gửi (thành message system THỨ HAI, ngay sau SYSTEM_PROMPT) khi lượt hỏi có khối
+# <history> — SYSTEM_PROMPT ở trên không đổi một byte nào, nên request không có lịch sử y hệt
+# trước đây. Lịch sử KHÔNG phải nguồn: câu trả lời cũ còn mang nội dung tài liệu (kể cả tài
+# liệu nay đã bị tắt) và chuỗi [SOURCE: ...] cũ; nếu model được phép trả lời/trích dẫn từ đó
+# thì bộ lọc tài liệu tắt (excluded_document_ids) bị vòng qua lịch sử.
+HISTORY_SYSTEM_PROMPT = (
+    """The user message begins with a <history> block holding earlier turns of this conversation.
+Rules for conversation history:
+1. Use <history> ONLY to understand what the current question in <user_query> refers to. It is NOT a source of answers.
+2. Every claim MUST still be supported by the <context> of the current turn, with a citation [SOURCE: chunk_id] whose chunk_id appears in <context>.
+3. Do NOT cite, quote or repeat information that appears only in <history>, and never reuse a [SOURCE: ...] marker from it. Earlier answers may rely on documents that are no longer available.
+4. If <context> is insufficient, respond exactly: "Not found in documents." even when <history> seems to contain the answer.
+
+"""
+    + HISTORY_DEFENSE_RULE
+)
+
+# Nhánh chitchat vốn không có message system; chỉ thêm message này khi có khối <history>.
+CHITCHAT_HISTORY_SYSTEM_PROMPT = (
+    """The user message begins with a <history> block holding earlier turns of this conversation.
+Rules for conversation history:
+1. Use <history> ONLY to keep the conversation natural and to understand what the current message refers to.
+2. Do NOT present information from <history> as facts from company documents, and do NOT output [SOURCE: ...] citations.
+
+"""
+    + HISTORY_DEFENSE_RULE
+)
 
 OUT_OF_SCOPE_RESPONSE = (
     "I'm sorry, this query is outside the scope of the enterprise knowledge system."
@@ -78,6 +107,75 @@ def _get_llm(state: AgentState) -> BaseLLM:
     )
 
 
+def _history_block(state: AgentState, max_chars: int) -> str:
+    """Khối <history> đã bọc untrusted (xem agents/history.py), hoặc "" khi state không có
+    lịch sử / không còn lượt hợp lệ nào. Đưa THẲNG state["history"] vào render_history —
+    không cắt/strip/nối thêm gì trước đó (bóc marker trích dẫn chỉ kín với nội dung nguyên vẹn).
+    """
+    return render_history(state.get("history"), max_chars)
+
+
+def build_rag_messages(
+    state: AgentState, context: str, *, history_max_chars: int = DEFAULT_MAX_CHARS
+) -> list[dict]:
+    """Dựng messages cho lời gọi LLM trả lời RAG. Hàm THUẦN: không I/O, không gọi LLM,
+    không sửa `state` — dùng chung cho generator_node (`llm.chat`) và nhánh stream của
+    chat_service (`llm.stream_chat`) để hai nơi không lệch nhau.
+
+    Đọc từ state: `query`, `system_prompt`, `history`, `image_data_urls`.
+    `context` là chuỗi từ `_build_context(state)`; rỗng → không có khối <context>
+    (câu hỏi thuần về ảnh).
+
+    Thứ tự messages:
+      1. system  SYSTEM_PROMPT — Lớp 1, bất biến, luôn đứng đầu.
+      2. system  HISTORY_SYSTEM_PROMPT — CHỈ khi có khối lịch sử.
+      3. system  state["system_prompt"] — Lớp 2 tùy biến từ panel Cấu hình, CỘNG THÊM chứ
+         không thay thế (nếu thay thế, safety rules/injection defense của Lớp 1 biến mất
+         hoàn toàn khỏi request).
+      4. user    <history> → <context> → <user_query> (+ ảnh nếu có).
+
+    Không có lịch sử (history None/rỗng/thiếu key/không còn lượt hợp lệ) → messages y hệt
+    trước khi có tính năng lịch sử.
+    """
+    history_block = _history_block(state, history_max_chars)
+
+    parts: list[str] = []
+    if history_block:
+        parts.append(history_block)
+    if context:
+        parts.append(wrap_untrusted("context", context))
+    parts.append(wrap_untrusted("user_query", state["query"]))
+    user_text = "\n\n".join(parts)
+
+    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if history_block:
+        messages.append({"role": "system", "content": HISTORY_SYSTEM_PROMPT})
+    developer_prompt = state.get("system_prompt")
+    if developer_prompt:
+        messages.append({"role": "system", "content": developer_prompt})
+    messages.append({"role": "user", "content": _build_user_content(user_text, state)})
+    return messages
+
+
+def build_chitchat_messages(
+    state: AgentState, *, history_max_chars: int = DEFAULT_MAX_CHARS
+) -> list[dict]:
+    """Dựng messages cho nhánh chitchat. Hàm thuần như `build_rag_messages`.
+
+    Không có lịch sử → đúng 1 message user như trước. Có lịch sử → thêm message system
+    (CHITCHAT_HISTORY_SYSTEM_PROMPT, có HISTORY_DEFENSE_RULE) và khối <history> đứng
+    TRƯỚC CHITCHAT_PROMPT trong message user.
+    """
+    history_block = _history_block(state, history_max_chars)
+    prompt = CHITCHAT_PROMPT.format(query=state["query"])
+    if not history_block:
+        return [{"role": "user", "content": _build_user_content(prompt, state)}]
+    return [
+        {"role": "system", "content": CHITCHAT_HISTORY_SYSTEM_PROMPT},
+        {"role": "user", "content": _build_user_content(f"{history_block}\n\n{prompt}", state)},
+    ]
+
+
 async def generator_node(state: AgentState) -> AgentState:
     intent = state.get("intent", "rag")
 
@@ -91,9 +189,8 @@ async def generator_node(state: AgentState) -> AgentState:
 
     if intent == "chitchat":
         llm = _get_llm(state)
-        user_content = _build_user_content(CHITCHAT_PROMPT.format(query=state["query"]), state)
         answer = await llm.chat(
-            messages=[{"role": "user", "content": user_content}],
+            messages=build_chitchat_messages(state),
             temperature=0.7,
             max_tokens=300,
         )
@@ -109,21 +206,10 @@ async def generator_node(state: AgentState) -> AgentState:
         # Có ảnh nhưng không có context tài liệu (câu hỏi thuần về ảnh, hoặc retrieval
         # không match gì) → vẫn gọi LLM với ảnh, KHÔNG rơi thẳng vào "not found" chỉ vì
         # thiếu context text — ảnh tự nó đủ để trả lời được nhiều câu hỏi.
-        user_text = (
-            f"{wrap_untrusted('context', context)}\n\n{wrap_untrusted('user_query', state['query'])}"
-            if has_rag_context
-            else wrap_untrusted("user_query", state["query"])
-        )
         llm = _get_llm(state)
-        # Lớp 1 (SYSTEM_PROMPT, bất biến — luôn có) + Lớp 2 (developer_prompt tùy biến từ
-        # panel Cấu hình, CỘNG THÊM chứ không thay thế — nếu thay thế, safety rules/injection
-        # defense của Lớp 1 biến mất hoàn toàn khỏi request).
-        developer_prompt = state.get("system_prompt")
-        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        if developer_prompt:
-            messages.append({"role": "system", "content": developer_prompt})
-        messages.append({"role": "user", "content": _build_user_content(user_text, state)})
-        rag_answer = await llm.chat(messages=messages, temperature=0.1)
+        # Lớp 1 (SYSTEM_PROMPT) + Lớp 2 (system_prompt tùy biến) + lịch sử nếu có — xem
+        # build_rag_messages.
+        rag_answer = await llm.chat(messages=build_rag_messages(state, context), temperature=0.1)
 
     # Detect if context/image is empty or LLM says not found
     is_not_found = (

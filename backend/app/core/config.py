@@ -134,6 +134,21 @@ class Settings(BaseSettings):
     # Ảnh gửi kèm chat (vision) — tách riêng khỏi UPLOAD_RATE_LIMIT_PER_MINUTE (đó là cho
     # tài liệu thư viện). Ngưỡng cao hơn vì user có thể paste nhiều screenshot liên tiếp.
     CHAT_IMAGE_RATE_LIMIT_PER_MINUTE: int = 30
+    # POST /audit-logs cho client tự ghi log — giới hạn riêng để 1 user không thể
+    # spam làm phình bảng audit_logs / làm nhiễu audit trail.
+    AUDIT_LOG_RATE_LIMIT_PER_MINUTE: int = 60
+
+    # ── Plan (gói free/pro) ───────────────────────────────────────────────────
+    # Cho phép user tự đổi plan của chính mình qua POST /auth/plan (không có thanh
+    # toán thật — chỉ dùng cho demo). Mặc định tắt: bật lên là ai cũng tự nâng Pro
+    # được, bỏ qua toàn bộ gate tính năng trả phí. Chỉ bật ở môi trường demo/dev.
+    SELF_SERVICE_PLAN_ENABLED: bool = False
+
+    # ── Chat history (nạp lịch sử hội thoại vào agent) ────────────────────────
+    # Số tin nhắn gần nhất của hội thoại được nạp vào AgentState cho lượt hỏi nối
+    # tiếp (6 = 3 lượt hỏi-đáp). 0 = tắt nạp lịch sử, mỗi lượt xử lý độc lập.
+    # Lượt có lịch sử tốn thêm LLM call + prompt dài hơn và không dùng response cache.
+    CHAT_HISTORY_MAX_MESSAGES: int = 6
 
     # ── SMTP / OTP đăng ký (xác minh email qua mã 6 số) ──────────────────────
     # SMTP_HOST rỗng = chưa cấu hình → Celery task bỏ qua gửi thật (log warning),

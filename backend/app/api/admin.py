@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 
-from app.core.dependencies import CurrentUserIdDep, DbDep
+from app.auth.rbac import require_role
+from app.core.dependencies import DbDep
 from app.core.plan_gate import can_use_advanced_search
 from app.models.conversation import Conversation
 from app.models.document import Document
@@ -13,17 +14,14 @@ from app.schemas.admin import DashboardStats, FailedTaskResponse, UpdateUserRole
 from app.schemas.auth import UserResponse
 from app.workers.celery_app import celery_app
 
-router = APIRouter(prefix="/admin", tags=["admin"])
-
-
-async def require_admin(user_id: str, db) -> None:
-    repo = UserRepository(db)
-    user = await repo.get_by_id(user_id)
-    if not user or user.role != UserRole.admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
+# Kiểm quyền admin đặt ở CẤP ROUTER: mọi route khai báo trên router này (kể cả route
+# thêm sau) đều bị chặn với non-admin, không phụ thuộc việc nhớ gọi kiểm tra trong
+# thân hàm. Guard: app/tests/unit/test_admin_rbac_guard.py duyệt toàn bộ /admin/*.
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_role(UserRole.admin))],
+)
 
 
 def _to_user_response(user: User) -> UserResponse:
@@ -39,9 +37,7 @@ def _to_user_response(user: User) -> UserResponse:
 
 
 @router.get("/dashboard", response_model=DashboardStats)
-async def dashboard(user_id: CurrentUserIdDep, db: DbDep):
-    await require_admin(user_id, db)
-
+async def dashboard(db: DbDep):
     total_users = (await db.execute(select(func.count(User.id)))).scalar_one()
     total_docs = (
         await db.execute(select(func.count(Document.id)).where(Document.deleted_at.is_(None)))
@@ -72,8 +68,7 @@ async def dashboard(user_id: CurrentUserIdDep, db: DbDep):
 
 
 @router.get("/jobs")
-async def list_jobs(user_id: CurrentUserIdDep, db: DbDep):
-    await require_admin(user_id, db)
+async def list_jobs():
     inspect = celery_app.control.inspect()
     active = inspect.active() or {}
     reserved = inspect.reserved() or {}
@@ -82,7 +77,6 @@ async def list_jobs(user_id: CurrentUserIdDep, db: DbDep):
 
 @router.get("/failed-tasks", response_model=list[FailedTaskResponse])
 async def list_failed_tasks(
-    user_id: CurrentUserIdDep,
     db: DbDep,
     resolved: bool | None = None,
     limit: int = 100,
@@ -90,14 +84,12 @@ async def list_failed_tasks(
     """Dead-letter queue (Task 2.2) — task Celery thất bại sau khi hết retry, ghi
     bởi workers/dlq.py qua signal task_failure. `resolved=false` để chỉ xem task
     chưa xử lý (mặc định trả cả 2)."""
-    await require_admin(user_id, db)
     return await FailedTaskRepository(db).list_recent(limit=limit, resolved=resolved)
 
 
 @router.post("/failed-tasks/{failed_task_id}/resolve", response_model=FailedTaskResponse)
-async def resolve_failed_task(failed_task_id: str, user_id: CurrentUserIdDep, db: DbDep):
+async def resolve_failed_task(failed_task_id: str, db: DbDep):
     """Đánh dấu đã xử lý (vd đã replay thủ công) — KHÔNG xoá record, giữ lịch sử."""
-    await require_admin(user_id, db)
     record = await FailedTaskRepository(db).mark_resolved(failed_task_id)
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Failed task not found")
@@ -105,17 +97,13 @@ async def resolve_failed_task(failed_task_id: str, user_id: CurrentUserIdDep, db
 
 
 @router.get("/users", response_model=list[UserResponse])
-async def list_users(user_id: CurrentUserIdDep, db: DbDep):
-    await require_admin(user_id, db)
+async def list_users(db: DbDep):
     users = await UserRepository(db).list_all(limit=200)
     return [_to_user_response(u) for u in users]
 
 
 @router.patch("/users/{target_user_id}/role", response_model=UserResponse)
-async def update_user_role(
-    target_user_id: str, body: UpdateUserRoleRequest, user_id: CurrentUserIdDep, db: DbDep
-):
-    await require_admin(user_id, db)
+async def update_user_role(target_user_id: str, body: UpdateUserRoleRequest, db: DbDep):
     user = await UserRepository(db).update_role(target_user_id, body.role)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")

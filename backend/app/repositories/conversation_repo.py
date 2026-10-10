@@ -1,9 +1,18 @@
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.conversation import Conversation
 from app.models.message import Message, MessageRole
+
+# Vị trí của tin nhắn trong một lượt hỏi-đáp: user (0) -> system (1) -> assistant (2).
+# Dùng làm khoá phụ khi hai tin nhắn trùng `created_at` (bảng `messages` không có cột
+# số thứ tự, còn `id` là uuid4 ngẫu nhiên nên không phản ánh thứ tự ghi).
+_ROLE_TURN_ORDER = case(
+    (Message.role == MessageRole.user, 0),
+    (Message.role == MessageRole.assistant, 2),
+    else_=1,
+)
 
 
 class ConversationRepository:
@@ -67,6 +76,43 @@ class ConversationRepository:
         await self.db.flush()
         await self.db.refresh(msg)
         return msg
+
+    async def list_recent_messages(
+        self, conversation_id: str, user_id: str, limit: int
+    ) -> list[Message]:
+        """`limit` tin nhắn MỚI nhất của hội thoại, trả theo thứ tự cũ -> mới.
+
+        - Cô lập theo chủ hội thoại: JOIN `Conversation` và ép `Conversation.user_id ==
+          user_id`; hội thoại của user khác (hoặc không tồn tại) -> `[]`, không raise.
+        - `limit <= 0` -> `[]`, không chạm DB.
+        - Thứ tự xác định khi trùng `created_at`: khoá phụ là vai trò (user trước
+          assistant — đúng thứ tự trong một lượt hỏi-đáp), cuối cùng là `id`.
+        - Chỉ nạp cột của `Message`. `citations`/`attachments` KHÔNG được nạp (lazy);
+          đừng truy cập chúng trên kết quả — trong AsyncSession sẽ lỗi MissingGreenlet.
+        - `Message.content` trả về THÔ: tin nhắn assistant còn marker
+          `<!--citations:...-->` ở cuối. Nơi gọi tự bóc marker trước khi đưa vào prompt.
+        - `conversations`/`messages` không có `deleted_at` (xoá cứng, cascade), nên không
+          có bộ lọc soft-delete ở đây.
+        """
+        if limit <= 0:
+            return []
+        result = await self.db.execute(
+            select(Message)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(
+                Message.conversation_id == conversation_id,
+                Conversation.user_id == user_id,
+            )
+            .order_by(
+                Message.created_at.desc(),
+                _ROLE_TURN_ORDER.desc(),
+                Message.id.desc(),
+            )
+            .limit(limit)
+        )
+        newest_first = list(result.scalars().all())
+        newest_first.reverse()
+        return newest_first
 
     async def update_title(self, conv_id: str, title: str) -> None:
         conv_result = await self.db.execute(select(Conversation).where(Conversation.id == conv_id))

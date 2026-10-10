@@ -237,6 +237,15 @@ class DocumentService:
         await self._get_owned_or_404(doc_id, user_id, is_admin)
         doc = await self.repo.set_active(doc_id, is_active)
         assert doc is not None  # _get_owned_or_404 đã đảm bảo tồn tại
+
+        # Invalidate Response Cache (Task 5.2) — cùng kiểu với upload/delete/reindex.
+        # Tắt: câu trả lời cache cũ dựng từ tài liệu vừa tắt là stale data. Bật: câu
+        # trả lời cache "không tìm thấy" giờ có thể trả lời được. Bump theo CHỦ SỞ HỮU
+        # tài liệu (doc.owner_id), không theo người thao tác (user_id) — admin tắt tài
+        # liệu của user khác thì cache của chính user đó phải chết (bucket admin luôn
+        # được bump kèm trong bump_version).
+        await bump_version(doc.owner_id)
+
         return DocumentResponse.model_validate(doc)
 
     async def _check_conversation_owned(

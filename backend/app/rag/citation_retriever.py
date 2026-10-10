@@ -24,6 +24,16 @@ Cơ chế gợi ý (đã chốt thiết kế, xem task):
   - LegalDocument luôn luôn suggestion-only — node này không có nội dung cấp Điều
     (content=null theo thiết kế graph_indexer.py) nên không có gì để đưa vào context.
 
+Tài liệu đang tắt (Document.is_active=False): caller truyền *excluded_document_ids*.
+Loại trừ này THẮNG mọi quy tắc phạm vi ở trên, kể cả khi document_ids=None hoặc
+document_ids liệt kê đích danh tài liệu đó:
+  - Provision neo (anchor) thuộc tài liệu tắt -> bỏ hẳn, không vào context và không
+    làm điểm xuất phát traversal (defense-in-depth: dense search lẽ ra đã lọc rồi).
+  - Provision liên quan thuộc tài liệu tắt -> KHÔNG vào context, không lộ nội dung;
+    chỉ còn là suggestion/node out_of_scope như tài liệu chưa gắn vào hội thoại, và
+    không làm nguồn mở rộng VIEN_DAN_VAN_BAN ở bước 3.
+excluded_document_ids=None/[] -> hành vi y hệt khi chưa có tham số này.
+
 Bảo mật: mọi Cypher filter owner_id (mirror HybridRetriever._graph_search). Namespace
 legal_address đã prefix owner_{owner_id} nên graph tự nhiên tách theo owner; filter
 owner_id ở đây là defense-in-depth, không phải cơ chế cách ly duy nhất.
@@ -83,10 +93,25 @@ def _owner_clause(alias: str, owner_id: str | None) -> str:
     return f"AND {alias}.owner_id = $owner_id" if owner_id is not None else ""
 
 
-def _in_scope(document_id: str | None, document_ids: list[str] | None) -> bool:
+def _is_excluded(document_id: str | None, excluded_document_ids: list[str] | None) -> bool:
+    """True nếu document_id thuộc danh sách tài liệu đang tắt. None/[] → không loại gì."""
+    if not excluded_document_ids or document_id is None:
+        return False
+    return document_id in excluded_document_ids
+
+
+def _in_scope(
+    document_id: str | None,
+    document_ids: list[str] | None,
+    excluded_document_ids: list[str] | None = None,
+) -> bool:
     """document_ids=None → user không giới hạn tài liệu → coi mọi thứ trong phạm vi.
-    document_id=None (không resolve được) → luôn ngoài phạm vi (không có gì để gộp)."""
+    document_id=None (không resolve được) → luôn ngoài phạm vi (không có gì để gộp).
+    document_id nằm trong excluded_document_ids (tài liệu đang tắt) → luôn ngoài phạm
+    vi, xét TRƯỚC document_ids nên không quy tắc nào ở trên mở lại được."""
     if document_id is None:
+        return False
+    if _is_excluded(document_id, excluded_document_ids):
         return False
     return document_ids is None or document_id in document_ids
 
@@ -251,12 +276,17 @@ def graph_augmented_search(
     seed_chunk_ids: list[str],
     document_ids: list[str] | None,
     owner_id: str | None,
+    *,
+    excluded_document_ids: list[str] | None = None,
 ) -> CitationGraphResult:
     """Điểm vào duy nhất — gọi từ agents/retriever.py qua asyncio.to_thread.
 
     seed_chunk_ids: chunk_id của kết quả dense search (đã owner/document-scoped).
     document_ids:   tài liệu đã gắn vào hội thoại hiện tại (None = không giới hạn).
     owner_id:       data isolation, mirror HybridRetriever (None = admin).
+    excluded_document_ids: (keyword-only) ID tài liệu đang tắt (is_active=False) phải
+                    loại khỏi context; None/[] = không loại gì (hành vi cũ). Chỉ THU
+                    HẸP kết quả, không bao giờ nới filter owner_id/document_ids.
     """
     if not seed_chunk_ids:
         return CitationGraphResult()
@@ -270,6 +300,13 @@ def graph_augmented_search(
 
         with driver.session() as session:
             anchor_rows = _anchor_provisions(session, seed_chunk_ids, owner_id)
+            # Seed thuộc tài liệu đang tắt: bỏ TRƯỚC khi traverse để không mở rộng
+            # viện dẫn từ nó (dense search lẽ ra đã lọc — đây là defense-in-depth).
+            anchor_rows = [
+                row
+                for row in anchor_rows
+                if not _is_excluded(row["document_id"], excluded_document_ids)
+            ]
             if not anchor_rows:
                 return CitationGraphResult()
 
@@ -288,11 +325,18 @@ def graph_augmented_search(
                 if current is None or row["hops"] < current["hops"]:
                     related_by_addr[addr] = row
 
+            # Provision liên quan thuộc tài liệu đang tắt không được làm nguồn mở rộng
+            # VIEN_DAN_VAN_BAN (cả từ chính nó lẫn từ LegalDocument của văn bản chứa nó).
+            expandable_related = {
+                addr: row
+                for addr, row in related_by_addr.items()
+                if not _is_excluded(row["document_id"], excluded_document_ids)
+            }
             real_related_addrs = [
-                addr for addr, row in related_by_addr.items() if not row["is_placeholder"]
+                addr for addr, row in expandable_related.items() if not row["is_placeholder"]
             ]
             doc_codes = {row["document_code"] for row in anchors_by_addr.values()}
-            doc_codes |= {row["document_code"] for row in related_by_addr.values()}
+            doc_codes |= {row["document_code"] for row in expandable_related.values()}
             own_doc_addrs = [build_document_address(owner_id, code) for code in doc_codes]
 
             legal_doc_rows = _traverse_legal_documents(
@@ -302,7 +346,13 @@ def graph_augmented_search(
         logger.exception("Citation graph traversal failed — trả kết quả rỗng (graceful)")
         return CitationGraphResult()
 
-    return _classify(anchors_by_addr, related_by_addr, legal_doc_rows, document_ids)
+    return _classify(
+        anchors_by_addr,
+        related_by_addr,
+        legal_doc_rows,
+        document_ids,
+        excluded_document_ids=excluded_document_ids,
+    )
 
 
 def _classify(
@@ -310,9 +360,13 @@ def _classify(
     related_by_addr: dict[str, dict],
     legal_doc_rows: list[dict],
     document_ids: list[str] | None,
+    excluded_document_ids: list[str] | None = None,
 ) -> CitationGraphResult:
     """Phân loại kết quả traversal thành context (gộp vào retrieval) và
-    suggested_documents (gợi ý, KHÔNG vào context) — xem quy tắc ở module docstring."""
+    suggested_documents (gợi ý, KHÔNG vào context) — xem quy tắc ở module docstring.
+
+    excluded_document_ids (tài liệu đang tắt): không Provision nào của các tài liệu
+    này được vào context_chunks hay lộ content qua citation_graph_nodes."""
     context_chunks: list[RetrievedChunk] = []
     citation_graph_path: list[dict] = []
     suggested_by_code: dict[str, dict] = {}
@@ -364,7 +418,17 @@ def _classify(
 
     # Anchor: Provision khớp trực tiếp dense search → luôn trong context (chính nó
     # đã owner/document-scoped từ _dense_search trước khi tới traversal này).
+    # Ngoại lệ duy nhất: anchor thuộc tài liệu đang tắt bị bỏ hẳn, kéo theo mọi cạnh
+    # xuất phát từ nó (graph_augmented_search đã lọc trước khi traverse; lặp lại ở
+    # đây để _classify tự nó cũng fail-closed).
+    dropped_anchor_addrs = {
+        addr
+        for addr, row in anchors_by_addr.items()
+        if _is_excluded(row["document_id"], excluded_document_ids)
+    }
     for addr, row in anchors_by_addr.items():
+        if addr in dropped_anchor_addrs:
+            continue
         context_chunks.append(
             RetrievedChunk(
                 chunk_id=row["chunk_id"],
@@ -391,6 +455,8 @@ def _classify(
     for addr, row in related_by_addr.items():
         anchor_addr = row["anchor_addr"]
         hops = row["hops"]
+        if anchor_addr in dropped_anchor_addrs:
+            continue
 
         if row["is_placeholder"]:
             citation_graph_path.append(
@@ -417,7 +483,7 @@ def _classify(
             )
             continue
 
-        in_scope = _in_scope(row["document_id"], document_ids)
+        in_scope = _in_scope(row["document_id"], document_ids, excluded_document_ids)
         citation_graph_path.append(
             {
                 "from_address": anchor_addr,
@@ -470,6 +536,8 @@ def _classify(
     for row in legal_doc_rows:
         addr = row["legal_address"]
         source_addr = row["source_addr"]
+        if source_addr in dropped_anchor_addrs:
+            continue
         citation_graph_path.append(
             {
                 "from_address": source_addr,
@@ -497,7 +565,9 @@ def _classify(
 
         resolved_id = row.get("document_id")
         display_name = row.get("name") or row.get("document_name")
-        already_in_scope = resolved_id and _in_scope(resolved_id, document_ids)
+        already_in_scope = resolved_id and _in_scope(
+            resolved_id, document_ids, excluded_document_ids
+        )
         if not already_in_scope:
             add_suggestion(
                 row["document_code"], resolved_id, row.get("name"), bool(resolved_id), source_addr

@@ -2,7 +2,11 @@
   "baseUrl": "http://localhost:8000",
   "apiPrefix": "/api/v1",
   "auth": {
-    "header": "Authorization: Bearer <access_token>"
+    "header": "Authorization: Bearer <access_token>",
+    "errors": {
+      "401": "Thiếu/sai/hết hạn access token (detail: \"Invalid or expired token\"), token đã bị thu hồi qua /auth/logout (\"Token has been revoked\"), hoặc user của token không còn tồn tại ở các route cần nạp user đầy đủ (\"User not found\")",
+      "403": "User bị khoá (is_active=false) ở các route cần nạp user đầy đủ: chat, documents, graph (detail: \"User is inactive\")"
+    }
   },
   "endpoints": {
     "auth": {
@@ -19,11 +23,55 @@
           }
         },
         "response": {
-          "id": "string (uuid)",
           "email": "string",
-          "full_name": "string | null",
-          "role": "user | admin",
-          "is_active": "boolean"
+          "message": "string"
+        },
+        "errors": {
+          "409": "Email đã đăng ký và đã xác minh (detail: \"Email already registered\")",
+          "422": "Body không hợp lệ (email sai định dạng, password ngoài 8..100 ký tự)"
+        },
+        "notes": "Trả OtpPendingResponse, KHÔNG trả user và KHÔNG trả token. Tài khoản chưa đăng nhập được cho tới khi gọi /auth/verify-otp. Đăng ký lại bằng email chưa xác minh: ghi đè mật khẩu/tên và gửi mã OTP mới (vẫn 201)."
+      },
+      "verifyOtp": {
+        "method": "POST",
+        "path": "/api/v1/auth/verify-otp",
+        "auth": false,
+        "statusCode": 200,
+        "request": {
+          "body": {
+            "email": "string (EmailStr)",
+            "otp_code": "string (đúng 6 ký tự)"
+          }
+        },
+        "response": {
+          "access_token": "string (JWT)",
+          "refresh_token": "string (JWT)",
+          "token_type": "bearer"
+        },
+        "errors": {
+          "400": "Email không tồn tại, email đã xác minh trước đó, mã OTP sai, mã hết hạn/không tồn tại, hoặc nhập sai quá số lần cho phép (OTP_MAX_ATTEMPTS, mặc định 5)",
+          "422": "Body không hợp lệ (otp_code không đúng 6 ký tự)"
+        },
+        "notes": "Thành công thì trả token luôn (tự đăng nhập). Mã OTP hết hạn sau OTP_EXPIRE_MINUTES (mặc định 10 phút)."
+      },
+      "resendOtp": {
+        "method": "POST",
+        "path": "/api/v1/auth/resend-otp",
+        "auth": false,
+        "statusCode": 200,
+        "request": {
+          "body": {
+            "email": "string (EmailStr)"
+          }
+        },
+        "response": {
+          "email": "string",
+          "message": "string"
+        },
+        "errors": {
+          "400": "Email đã được xác minh trước đó",
+          "404": "Email không tồn tại (detail: \"User not found\")",
+          "429": "Chưa hết thời gian chờ gửi lại (OTP_RESEND_COOLDOWN_SECONDS, mặc định 60 giây); kèm header Retry-After"
         }
       },
       "login": {
@@ -33,7 +81,7 @@
         "statusCode": 200,
         "request": {
           "body": {
-            "email": "string",
+            "email": "string (EmailStr)",
             "password": "string"
           }
         },
@@ -41,6 +89,10 @@
           "access_token": "string (JWT)",
           "refresh_token": "string (JWT)",
           "token_type": "bearer"
+        },
+        "errors": {
+          "401": "Sai email hoặc mật khẩu (detail: \"Invalid email or password\")",
+          "403": "Tài khoản bị khoá (\"Account is deactivated\") hoặc email chưa xác minh OTP"
         }
       },
       "refresh": {
@@ -57,6 +109,9 @@
           "access_token": "string (JWT)",
           "refresh_token": "string (JWT)",
           "token_type": "bearer"
+        },
+        "errors": {
+          "401": "Refresh token không hợp lệ/hết hạn (\"Invalid refresh token\"), hoặc user không tồn tại/bị khoá (\"User not found\")"
         }
       },
       "me": {
@@ -68,9 +123,49 @@
           "id": "string (uuid)",
           "email": "string",
           "full_name": "string | null",
-          "role": "user | admin",
-          "is_active": "boolean"
-        }
+          "role": "admin | editor | viewer",
+          "is_active": "boolean",
+          "plan": "free | pro",
+          "can_use_advanced_search": "boolean"
+        },
+        "errors": {
+          "404": "User của token không còn tồn tại (detail: \"User not found\")"
+        },
+        "notes": "can_use_advanced_search do server tính (admin luôn true; còn lại cần plan=pro và chưa hết hạn). Frontend dùng trường này để khoá/mở tính năng Nâng cao, không tự suy từ role/plan."
+      },
+      "updatePlan": {
+        "method": "POST",
+        "path": "/api/v1/auth/plan",
+        "auth": true,
+        "statusCode": 200,
+        "request": {
+          "body": {
+            "plan": "free | pro"
+          }
+        },
+        "response": {
+          "id": "string (uuid)",
+          "email": "string",
+          "full_name": "string | null",
+          "role": "admin | editor | viewer",
+          "is_active": "boolean",
+          "plan": "free | pro",
+          "can_use_advanced_search": "boolean"
+        },
+        "errors": {
+          "403": "plan=pro khi cờ server SELF_SERVICE_PLAN_ENABLED tắt (mặc định tắt). detail: \"Nâng cấp gói Pro cần được quản trị viên kích hoạt.\"",
+          "404": "User của token không còn tồn tại (detail: \"User not found\")",
+          "422": "plan không phải free | pro (phân biệt hoa thường)"
+        },
+        "notes": "Tự đổi gói của chính mình, bản demo, không có cổng thanh toán. Khi cờ tắt: nâng lên pro luôn trả 403 và không ghi gì (kể cả user đang pro gọi lại, kể cả admin); hạ về free vẫn 200. Lưu ý: khi cờ tắt, đã hạ về free thì không tự nâng lại được qua API (chưa có endpoint admin đổi plan)."
+      },
+      "logout": {
+        "method": "POST",
+        "path": "/api/v1/auth/logout",
+        "auth": true,
+        "statusCode": 204,
+        "response": null,
+        "notes": "Thu hồi access token hiện tại (đưa jti vào blacklist tới khi token hết hạn). Idempotent: token sai/hết hạn vẫn trả 204. Chỉ thiếu hẳn header Authorization mới bị từ chối. Không có body, không thu hồi refresh token."
       }
     },
     "chat": {
@@ -79,18 +174,28 @@
         "path": "/api/v1/chat",
         "auth": true,
         "statusCode": 200,
+        "rateLimit": "CHAT_RATE_LIMIT_PER_MINUTE request / 60 giây / user (mặc định 20), dùng chung bộ đếm với /chat/stream",
         "request": {
           "body": {
-            "message": "string",
-            "conversation_id": "string (uuid) | null",
-            "search_tool": "boolean | null"
+            "message": "string (bắt buộc)",
+            "conversation_id": "string (uuid) | null (null = tạo hội thoại mới)",
+            "searchTool": "boolean | null (default: false) - bật fallback tìm web",
+            "documentIds": "string[] | null (default: null)",
+            "imageIds": "string[] | null (tối đa 3) - id trả về từ POST /chat/images",
+            "searchMode": "hybrid | vector | keyword | advanced | null (default: null)",
+            "topK": "number (int, 1..50) | null",
+            "similarityThreshold": "number (0.0..1.0) | null",
+            "systemPrompt": "string (max: 4000) | null",
+            "model": "string (max: 200) | null",
+            "apiKey": "string (max: 500) | null",
+            "baseUrl": "string (max: 500) | null"
           }
         },
         "response": {
           "conversation_id": "string (uuid)",
           "message": {
             "id": "string (uuid)",
-            "role": "user | assistant",
+            "role": "user | assistant | system",
             "content": "string",
             "created_at": "ISO8601 datetime",
             "citations": [
@@ -103,9 +208,138 @@
                 "source_link": "string | null",
                 "content_snippet": "string"
               }
+            ],
+            "attachments": [
+              {
+                "id": "string (uuid)",
+                "url": "string (presigned URL)",
+                "content_type": "string"
+              }
             ]
-          }
+          },
+          "citation_graph_path": [
+            {
+              "from_address": "string",
+              "to_address": "string",
+              "relation": "string",
+              "hops": "number",
+              "in_context": "boolean"
+            }
+          ],
+          "citation_graph_nodes": [
+            {
+              "address": "string",
+              "label": "string",
+              "document_id": "string | null",
+              "document_name": "string | null",
+              "node_type": "anchor | in_context | out_of_scope",
+              "in_library": "boolean",
+              "content": "string | null"
+            }
+          ],
+          "suggested_documents": [
+            {
+              "document_code": "string",
+              "document_id": "string | null",
+              "name": "string | null",
+              "in_library": "boolean",
+              "cited_from": "string"
+            }
+          ]
+        },
+        "errors": {
+          "403": "searchMode=advanced mà user không đủ quyền (detail: \"Chế độ tra cứu Nâng cao yêu cầu gói trả phí (Pro).\")",
+          "404": "conversation_id không tồn tại/không thuộc user (\"Conversation not found\"), hoặc imageIds có id lạ/không thuộc user (\"Attachment not found\")",
+          "422": "Body không hợp lệ (searchMode ngoài danh sách, quá 3 ảnh, topK/similarityThreshold ngoài khoảng...)",
+          "429": "Vượt rate limit; kèm header Retry-After",
+          "502": "Lỗi khi gọi LLM (thường gặp khi dùng model tuỳ chỉnh: sai model/apiKey/baseUrl)"
+        },
+        "notes": {
+          "fieldNames": "Các trường có alias camelCase (searchTool, documentIds, imageIds, searchMode, topK, similarityThreshold, systemPrompt, apiKey, baseUrl); server cũng nhận tên snake_case tương ứng (search_tool, document_ids...). conversation_id và model không có alias.",
+          "documentIds": "null hoặc mảng rỗng = tìm trong toàn bộ thư viện của user (admin: mọi tài liệu), TRỪ tài liệu đang tắt (is_active=false). Tài liệu đang tắt bị loại kể cả khi được nêu đích danh.",
+          "searchMode": "null và hybrid = dense (Qdrant) + đồ thị Neo4j. vector = chỉ dense, không dùng Neo4j. keyword = hiện chạy giống hybrid (chưa có chỉ mục từ khoá riêng). advanced = hybrid + truy vết viện dẫn, cần can_use_advanced_search=true, nếu không trả 403.",
+          "byom": "model/apiKey/baseUrl: dùng model OpenAI-compatible của người dùng. apiKey rỗng/null thì bỏ qua model và baseUrl, dùng model mặc định của server. apiKey không được lưu ở server.",
+          "response": "attachments của message trả về luôn là []. citation_graph_path, citation_graph_nodes, suggested_documents là [] trừ khi searchMode=advanced. content của citation_graph_nodes là null khi node_type=out_of_scope. Không tìm thấy thì content là \"Không tìm thấy trong tài liệu.\" hoặc \"Not found in documents.\""
         }
+      },
+      "streamMessage": {
+        "method": "POST",
+        "path": "/api/v1/chat/stream",
+        "auth": true,
+        "statusCode": 200,
+        "rateLimit": "CHAT_RATE_LIMIT_PER_MINUTE request / 60 giây / user (mặc định 20), dùng chung bộ đếm với /chat",
+        "request": {
+          "body": "Giống hệt body của POST /api/v1/chat (xem chat.sendMessage)"
+        },
+        "response": {
+          "contentType": "text/event-stream",
+          "format": "Mỗi sự kiện là một dòng `data: <json>` kết thúc bằng một dòng trống. Không có dòng `event:`; loại sự kiện nằm ở trường `type` trong JSON.",
+          "order": "meta (1 lần) -> delta (0..n lần) -> done (1 lần). error có thể xuất hiện ở bất kỳ lúc nào và kết thúc stream (không có done sau error).",
+          "events": {
+            "meta": {
+              "type": "meta",
+              "conversation_id": "string (uuid)"
+            },
+            "delta": {
+              "type": "delta",
+              "text": "string (một mẩu văn bản; nối các text lại thành câu trả lời)"
+            },
+            "done": {
+              "type": "done",
+              "conversation_id": "string (uuid)",
+              "message_id": "string (uuid)",
+              "citations": [
+                {
+                  "chunk_id": "string",
+                  "document_id": "string",
+                  "document_name": "string",
+                  "page_number": "number | null",
+                  "section_title": "string | null",
+                  "source_link": "string | null",
+                  "content_snippet": "string",
+                  "score": "number (chỉ có ở trích dẫn từ tài liệu, không có ở trích dẫn web)"
+                }
+              ],
+              "citation_graph_path": "mảng, cùng hình dạng với chat.sendMessage",
+              "citation_graph_nodes": "mảng, cùng hình dạng với chat.sendMessage",
+              "suggested_documents": "mảng, cùng hình dạng với chat.sendMessage"
+            },
+            "error": {
+              "type": "error",
+              "detail": "string"
+            }
+          }
+        },
+        "errors": {
+          "403": "searchMode=advanced mà user không đủ quyền (trả trước khi stream bắt đầu)",
+          "422": "Body không hợp lệ (trả trước khi stream bắt đầu)",
+          "429": "Vượt rate limit; kèm header Retry-After (trả trước khi stream bắt đầu)"
+        },
+        "notes": "Khi stream đã bắt đầu, mọi lỗi đều đi qua sự kiện error với HTTP 200, KHÔNG phải mã lỗi HTTP: hội thoại không tồn tại (detail \"Conversation not found\", phát trước cả meta), ảnh đính kèm không hợp lệ, lỗi LLM... Client phải đọc sự kiện error chứ không chỉ kiểm mã trạng thái. Ngữ nghĩa documentIds / searchMode giống chat.sendMessage. Có ảnh đính kèm hoặc câu hỏi không phải tra cứu tài liệu thì câu trả lời đến trong một delta duy nhất."
+      },
+      "uploadImage": {
+        "method": "POST",
+        "path": "/api/v1/chat/images",
+        "auth": true,
+        "statusCode": 201,
+        "rateLimit": "CHAT_IMAGE_RATE_LIMIT_PER_MINUTE request / 60 giây / user (mặc định 30)",
+        "request": {
+          "contentType": "multipart/form-data",
+          "body": {
+            "file": "File (png | jpeg | webp, max 8MB)"
+          }
+        },
+        "response": {
+          "id": "string (uuid)",
+          "url": "string (presigned URL, hết hạn sau 3600 giây)",
+          "content_type": "image/png | image/jpeg | image/webp"
+        },
+        "errors": {
+          "413": "Ảnh lớn hơn 8MB",
+          "415": "Không phải png/jpeg/webp (nhận diện theo nội dung file, không theo đuôi file hay content-type client khai)",
+          "429": "Vượt rate limit; kèm header Retry-After"
+        },
+        "notes": "Ảnh là ngữ cảnh tạm cho một lượt hỏi đáp, không vào thư viện tài liệu. Dùng id trả về trong imageIds của /chat hoặc /chat/stream."
       },
       "getHistory": {
         "method": "GET",
@@ -118,7 +352,7 @@
             "title": "string | null",
             "created_at": "ISO8601 datetime",
             "updated_at": "ISO8601 datetime",
-            "message_count": "number"
+            "message_count": "number (hiện luôn là 0 - server chưa tính)"
           }
         ]
       },
@@ -137,12 +371,32 @@
           "messages": [
             {
               "id": "string (uuid)",
-              "role": "user | assistant",
+              "role": "user | assistant | system",
               "content": "string",
               "created_at": "ISO8601 datetime",
-              "citations": []
+              "citations": [
+                {
+                  "chunk_id": "string",
+                  "document_id": "string",
+                  "document_name": "string",
+                  "page_number": "number | null",
+                  "section_title": "string | null",
+                  "source_link": "string | null",
+                  "content_snippet": "string"
+                }
+              ],
+              "attachments": [
+                {
+                  "id": "string (uuid)",
+                  "url": "string (presigned URL, hết hạn sau 3600 giây)",
+                  "content_type": "string"
+                }
+              ]
             }
           ]
+        },
+        "errors": {
+          "404": "Hội thoại không tồn tại hoặc không thuộc user (detail: \"Conversation not found\")"
         }
       },
       "deleteConversation": {
@@ -153,7 +407,10 @@
         "params": {
           "conversation_id": "string (uuid)"
         },
-        "response": null
+        "response": null,
+        "errors": {
+          "404": "Hội thoại không tồn tại hoặc không thuộc user (detail: \"Conversation not found\")"
+        }
       }
     },
     "documents": {
@@ -162,23 +419,38 @@
         "path": "/api/v1/documents/upload",
         "auth": true,
         "statusCode": 202,
+        "rateLimit": "UPLOAD_RATE_LIMIT_PER_MINUTE request / 60 giây / user (mặc định 10)",
         "request": {
           "contentType": "multipart/form-data",
           "body": {
-            "file": "File (pdf | docx | txt, max 50MB)"
+            "file": "File (pdf | docx | txt, max 50MB)",
+            "conversation_id": "string (uuid) | null (trường form, tuỳ chọn) - gắn tài liệu vào hội thoại"
           }
         },
         "response": {
           "id": "string (uuid)",
           "name": "string",
-          "type": "pdf | docx | txt",
-          "status": "pending | processing | indexed | failed",
+          "type": "pdf | docx | txt | confluence | slack | google_drive",
+          "status": "pending | processing | indexed | failed | archived",
           "version": "number",
           "source": "string | null",
           "file_size": "number (bytes) | null",
+          "is_active": "boolean",
+          "conversations": [
+            {
+              "id": "string (uuid)",
+              "title": "string | null"
+            }
+          ],
           "created_at": "ISO8601 datetime",
           "updated_at": "ISO8601 datetime"
-        }
+        },
+        "errors": {
+          "413": "File lớn hơn 50MB",
+          "415": "content-type không phải pdf/docx/txt",
+          "429": "Vượt rate limit; kèm header Retry-After"
+        },
+        "notes": "Upload chỉ nhận pdf/docx/txt; các giá trị type còn lại (confluence, slack, google_drive) chỉ có thể xuất hiện ở tài liệu tạo từ nguồn khác. Xử lý (ingest) chạy nền: theo dõi qua trường status."
       },
       "list": {
         "method": "GET",
@@ -194,11 +466,18 @@
             {
               "id": "string (uuid)",
               "name": "string",
-              "type": "pdf | docx | txt",
-              "status": "pending | processing | indexed | failed",
+              "type": "pdf | docx | txt | confluence | slack | google_drive",
+              "status": "pending | processing | indexed | failed | archived",
               "version": "number",
               "source": "string | null",
               "file_size": "number | null",
+              "is_active": "boolean",
+              "conversations": [
+                {
+                  "id": "string (uuid)",
+                  "title": "string | null"
+                }
+              ],
               "created_at": "ISO8601 datetime",
               "updated_at": "ISO8601 datetime"
             }
@@ -206,7 +485,8 @@
           "total": "number",
           "page": "number",
           "page_size": "number"
-        }
+        },
+        "notes": "User thường chỉ thấy tài liệu của mình; admin thấy mọi tài liệu."
       },
       "getById": {
         "method": "GET",
@@ -219,14 +499,44 @@
         "response": {
           "id": "string (uuid)",
           "name": "string",
-          "type": "pdf | docx | txt",
-          "status": "pending | processing | indexed | failed",
+          "type": "pdf | docx | txt | confluence | slack | google_drive",
+          "status": "pending | processing | indexed | failed | archived",
           "version": "number",
           "source": "string | null",
           "file_size": "number | null",
+          "is_active": "boolean",
+          "conversations": [
+            {
+              "id": "string (uuid)",
+              "title": "string | null"
+            }
+          ],
           "created_at": "ISO8601 datetime",
           "updated_at": "ISO8601 datetime"
+        },
+        "errors": {
+          "404": "Tài liệu không tồn tại hoặc không thuộc user (detail: \"Document not found\")"
         }
+      },
+      "getDownloadUrl": {
+        "method": "GET",
+        "path": "/api/v1/documents/{doc_id}/download",
+        "auth": true,
+        "statusCode": 200,
+        "params": {
+          "doc_id": "string (uuid)"
+        },
+        "query": {
+          "expires": "number (giây, default: 3600, min: 60, max: 86400)"
+        },
+        "response": {
+          "url": "string (presigned URL tới file gốc)",
+          "expires_in": "number (giây, bằng giá trị expires đã gửi)"
+        },
+        "errors": {
+          "404": "Tài liệu không tồn tại/không thuộc user (\"Document not found\"), hoặc tài liệu không có file lưu trữ (\"No file stored for this document\")"
+        },
+        "notes": "Không trả nội dung file. Client tải trực tiếp từ url trả về."
       },
       "delete": {
         "method": "DELETE",
@@ -236,7 +546,10 @@
         "params": {
           "doc_id": "string (uuid)"
         },
-        "response": null
+        "response": null,
+        "errors": {
+          "404": "Tài liệu không tồn tại hoặc không thuộc user (detail: \"Document not found\")"
+        }
       },
       "reindex": {
         "method": "POST",
@@ -251,14 +564,133 @@
         "response": {
           "id": "string (uuid)",
           "name": "string",
-          "type": "pdf | docx | txt",
-          "status": "pending | processing | indexed | failed",
+          "type": "pdf | docx | txt | confluence | slack | google_drive",
+          "status": "pending | processing | indexed | failed | archived",
           "version": "number",
           "source": "string | null",
           "file_size": "number | null",
+          "is_active": "boolean",
+          "conversations": [
+            {
+              "id": "string (uuid)",
+              "title": "string | null"
+            }
+          ],
           "created_at": "ISO8601 datetime",
           "updated_at": "ISO8601 datetime"
+        },
+        "errors": {
+          "404": "Tài liệu không tồn tại hoặc không thuộc user (detail: \"Document not found\")",
+          "422": "Tài liệu không có file lưu trữ nên không reindex được"
         }
+      },
+      "setActive": {
+        "method": "PATCH",
+        "path": "/api/v1/documents/{doc_id}/active",
+        "auth": true,
+        "statusCode": 200,
+        "params": {
+          "doc_id": "string (uuid)"
+        },
+        "request": {
+          "body": {
+            "is_active": "boolean"
+          }
+        },
+        "response": {
+          "id": "string (uuid)",
+          "name": "string",
+          "type": "pdf | docx | txt | confluence | slack | google_drive",
+          "status": "pending | processing | indexed | failed | archived",
+          "version": "number",
+          "source": "string | null",
+          "file_size": "number | null",
+          "is_active": "boolean",
+          "conversations": [
+            {
+              "id": "string (uuid)",
+              "title": "string | null"
+            }
+          ],
+          "created_at": "ISO8601 datetime",
+          "updated_at": "ISO8601 datetime"
+        },
+        "errors": {
+          "404": "Tài liệu không tồn tại hoặc không thuộc user (detail: \"Document not found\")"
+        },
+        "notes": "Tài liệu tắt (is_active=false) bị loại khỏi mọi truy hồi của /chat và /chat/stream, kể cả khi được nêu trong documentIds."
+      },
+      "addConversation": {
+        "method": "POST",
+        "path": "/api/v1/documents/{doc_id}/conversations",
+        "auth": true,
+        "statusCode": 200,
+        "params": {
+          "doc_id": "string (uuid)"
+        },
+        "request": {
+          "body": {
+            "conversation_id": "string (uuid)"
+          }
+        },
+        "response": {
+          "id": "string (uuid)",
+          "name": "string",
+          "type": "pdf | docx | txt | confluence | slack | google_drive",
+          "status": "pending | processing | indexed | failed | archived",
+          "version": "number",
+          "source": "string | null",
+          "file_size": "number | null",
+          "is_active": "boolean",
+          "conversations": [
+            {
+              "id": "string (uuid)",
+              "title": "string | null"
+            }
+          ],
+          "created_at": "ISO8601 datetime",
+          "updated_at": "ISO8601 datetime"
+        },
+        "errors": {
+          "404": "Tài liệu (\"Document not found\") hoặc hội thoại (\"Conversation not found\") không tồn tại/không thuộc user"
+        },
+        "notes": "Gắn thêm một hội thoại vào tài liệu, giữ nguyên các liên kết đã có."
+      },
+      "setConversations": {
+        "method": "PUT",
+        "path": "/api/v1/documents/{doc_id}/conversations",
+        "auth": true,
+        "statusCode": 200,
+        "params": {
+          "doc_id": "string (uuid)"
+        },
+        "request": {
+          "body": {
+            "conversation_ids": "string[] (default: [])"
+          }
+        },
+        "response": {
+          "id": "string (uuid)",
+          "name": "string",
+          "type": "pdf | docx | txt | confluence | slack | google_drive",
+          "status": "pending | processing | indexed | failed | archived",
+          "version": "number",
+          "source": "string | null",
+          "file_size": "number | null",
+          "is_active": "boolean",
+          "conversations": [
+            {
+              "id": "string (uuid)",
+              "title": "string | null"
+            }
+          ],
+          "created_at": "ISO8601 datetime",
+          "updated_at": "ISO8601 datetime"
+        },
+        "errors": {
+          "404": "Tài liệu (\"Document not found\") hoặc một hội thoại trong danh sách (\"Conversation not found\") không tồn tại/không thuộc user"
+        },
+        "notes": "Thay TOÀN BỘ danh sách hội thoại gắn với tài liệu. Mảng rỗng = gỡ khỏi mọi hội thoại (đưa về kho tổng)."
       }
     },
     "admin": {
@@ -277,7 +709,8 @@
             "pending": "number",
             "processing": "number",
             "indexed": "number",
-            "failed": "number"
+            "failed": "number",
+            "archived": "number"
           }
         }
       },
@@ -291,17 +724,293 @@
           "active": "object (Celery active tasks)",
           "reserved": "object (Celery queued tasks)"
         }
+      },
+      "listFailedTasks": {
+        "method": "GET",
+        "path": "/api/v1/admin/failed-tasks",
+        "auth": true,
+        "role": "admin",
+        "statusCode": 200,
+        "query": {
+          "resolved": "boolean | null (default: null = trả cả hai; false = chỉ task chưa xử lý)",
+          "limit": "number (default: 100)"
+        },
+        "response": [
+          {
+            "id": "string (uuid)",
+            "task_name": "string",
+            "celery_task_id": "string",
+            "args": "array | null",
+            "kwargs": "object | null",
+            "exception": "string",
+            "traceback": "string | null",
+            "retries": "number",
+            "queue": "string | null",
+            "resolved": "boolean",
+            "created_at": "ISO8601 datetime"
+          }
+        ],
+        "notes": "Danh sách task nền thất bại sau khi hết lượt thử lại, mới nhất trước."
+      },
+      "resolveFailedTask": {
+        "method": "POST",
+        "path": "/api/v1/admin/failed-tasks/{failed_task_id}/resolve",
+        "auth": true,
+        "role": "admin",
+        "statusCode": 200,
+        "params": {
+          "failed_task_id": "string (uuid)"
+        },
+        "response": {
+          "id": "string (uuid)",
+          "task_name": "string",
+          "celery_task_id": "string",
+          "args": "array | null",
+          "kwargs": "object | null",
+          "exception": "string",
+          "traceback": "string | null",
+          "retries": "number",
+          "queue": "string | null",
+          "resolved": "boolean",
+          "created_at": "ISO8601 datetime"
+        },
+        "errors": {
+          "404": "Không tìm thấy bản ghi (detail: \"Failed task not found\")"
+        },
+        "notes": "Chỉ đánh dấu resolved=true, không xoá bản ghi và không chạy lại task. Không có body."
+      },
+      "listUsers": {
+        "method": "GET",
+        "path": "/api/v1/admin/users",
+        "auth": true,
+        "role": "admin",
+        "statusCode": 200,
+        "response": [
+          {
+            "id": "string (uuid)",
+            "email": "string",
+            "full_name": "string | null",
+            "role": "admin | editor | viewer",
+            "is_active": "boolean",
+            "plan": "free | pro",
+            "can_use_advanced_search": "boolean"
+          }
+        ],
+        "notes": "Tối đa 200 user, không phân trang."
+      },
+      "updateUserRole": {
+        "method": "PATCH",
+        "path": "/api/v1/admin/users/{target_user_id}/role",
+        "auth": true,
+        "role": "admin",
+        "statusCode": 200,
+        "params": {
+          "target_user_id": "string (uuid)"
+        },
+        "request": {
+          "body": {
+            "role": "admin | editor | viewer"
+          }
+        },
+        "response": {
+          "id": "string (uuid)",
+          "email": "string",
+          "full_name": "string | null",
+          "role": "admin | editor | viewer",
+          "is_active": "boolean",
+          "plan": "free | pro",
+          "can_use_advanced_search": "boolean"
+        },
+        "errors": {
+          "404": "Không tìm thấy user cần đổi role (detail: \"User not found\" - trùng thông điệp với trường hợp user của token không tồn tại)",
+          "422": "role không phải admin | editor | viewer"
+        },
+        "notes": "Chỉ đổi role, không đổi plan. Chưa có endpoint admin đổi plan cho user."
+      },
+      "commonErrors": {
+        "401": "Thiếu/sai/hết hạn token",
+        "403": "User không phải admin (detail: \"Requires admin role or higher\"). Kiểm quyền chạy trước khi kiểm body/query, nên non-admin gửi dữ liệu sai vẫn nhận 403 chứ không phải 422",
+        "404": "User của token không còn tồn tại (detail: \"User not found\")"
+      }
+    },
+    "graph": {
+      "overview": {
+        "method": "GET",
+        "path": "/api/v1/graph/overview",
+        "auth": true,
+        "plan": "pro (hoặc role admin)",
+        "statusCode": 200,
+        "query": {
+          "conversation_id": "string (uuid, bắt buộc)"
+        },
+        "response": {
+          "nodes": [
+            {
+              "id": "string",
+              "label": "string",
+              "type": "document | chunk | provision",
+              "group": "string (document_id - cùng group = cùng tài liệu)",
+              "meta": "object (ở cấp tài liệu: { chunk_count: number })"
+            }
+          ],
+          "edges": [
+            {
+              "source": "string (id node)",
+              "target": "string (id node)",
+              "rel": "string (loại quan hệ, vd REFERENCES | NEXT_CHUNK)"
+            }
+          ]
+        },
+        "notes": "Đồ thị cấp tài liệu của các tài liệu gắn với hội thoại."
+      },
+      "expand": {
+        "method": "GET",
+        "path": "/api/v1/graph/expand",
+        "auth": true,
+        "plan": "pro (hoặc role admin)",
+        "statusCode": 200,
+        "query": {
+          "conversation_id": "string (uuid, bắt buộc)",
+          "document_id": "string (uuid, bắt buộc)"
+        },
+        "response": {
+          "documentId": "string (uuid)",
+          "nodes": [
+            {
+              "id": "string",
+              "label": "string",
+              "type": "document | chunk | provision",
+              "group": "string (document_id)",
+              "meta": "object (ở cấp chunk: { chunk_index: number, content: string })"
+            }
+          ],
+          "edges": [
+            {
+              "source": "string (id node)",
+              "target": "string (id node)",
+              "rel": "string"
+            }
+          ],
+          "truncated": "boolean (true khi bị cắt ở trần GRAPH_MAX_NODES, mặc định 300)",
+          "total": "number",
+          "returned": "number"
+        },
+        "errors": {
+          "404": "Hội thoại không tồn tại/không thuộc user, hoặc tài liệu không gắn với hội thoại này (\"Tài liệu không thuộc hội thoại này.\")"
+        },
+        "notes": "Bung một tài liệu thành các chunk của nó. Lưu ý khoá trả về là documentId (camelCase)."
+      },
+      "highlight": {
+        "method": "POST",
+        "path": "/api/v1/graph/highlight",
+        "auth": true,
+        "plan": "pro (hoặc role admin)",
+        "statusCode": 200,
+        "request": {
+          "body": {
+            "conversationId": "string (uuid, bắt buộc; cũng nhận conversation_id)",
+            "query": "string (bắt buộc)"
+          }
+        },
+        "response": {
+          "nodeIds": "string[] (id các node trúng truy vấn)"
+        },
+        "notes": "Chỉ trả id node, không trả lại đồ thị; client tự đổi màu trên đồ thị đang có."
+      },
+      "commonErrors": {
+        "403": "User không đủ quyền dùng tính năng Nâng cao: không phải admin và plan không phải pro còn hạn (detail: \"Tính năng Nâng cao yêu cầu gói trả phí (Pro).\")",
+        "404": "Hội thoại không tồn tại hoặc không thuộc user (detail: \"Không tìm thấy hội thoại.\")",
+        "422": "Thiếu tham số bắt buộc"
+      }
+    },
+    "auditLogs": {
+      "create": {
+        "method": "POST",
+        "path": "/api/v1/audit-logs",
+        "auth": true,
+        "statusCode": 201,
+        "rateLimit": "AUDIT_LOG_RATE_LIMIT_PER_MINUTE request / 60 giây / user (mặc định 60)",
+        "request": {
+          "body": {
+            "action": "string (min: 1, max: 255, bắt buộc)",
+            "resource_type": "config | research (bắt buộc)",
+            "resource_id": "string (max: 36) | null",
+            "extra_data": "object | null (sau khi chuyển thành JSON dài tối đa 2000 ký tự)"
+          }
+        },
+        "response": {
+          "id": "string (uuid)",
+          "user_id": "string (uuid) | null",
+          "action": "string",
+          "resource_type": "string | null",
+          "resource_id": "string | null",
+          "extra_data": "object | null (luôn có source: \"client\")",
+          "ip_address": "string | null",
+          "created_at": "ISO8601 datetime",
+          "updated_at": "ISO8601 datetime"
+        },
+        "errors": {
+          "422": "resource_type ngoài config | research (kể cả null, thiếu, sai hoa thường; các loại query/document/upload chỉ server tự ghi), action rỗng hoặc dài hơn 255, resource_id dài hơn 36, extra_data quá lớn",
+          "429": "Vượt rate limit; kèm header Retry-After"
+        },
+        "notes": "Bản ghi do client tự khai. Server luôn gắn extra_data.source = \"client\" (kể cả khi gửi extra_data null). Các khoá dành riêng source, dlp_flag, dlp_reason ở cấp trên cùng của extra_data bị loại bỏ im lặng (không báo lỗi, không phân biệt hoa thường). user_id và ip_address do server đặt; gửi kèm trong body thì bị bỏ qua. Nơi đọc cờ DLP phải lọc resource_type = \"query\" và extra_data.source khác \"client\"."
+      },
+      "list": {
+        "method": "GET",
+        "path": "/api/v1/audit-logs",
+        "auth": true,
+        "statusCode": 200,
+        "response": [
+          {
+            "id": "string (uuid)",
+            "user_id": "string (uuid) | null",
+            "action": "string",
+            "resource_type": "string | null",
+            "resource_id": "string | null",
+            "extra_data": "object | null",
+            "ip_address": "string | null",
+            "created_at": "ISO8601 datetime",
+            "updated_at": "ISO8601 datetime"
+          }
+        ],
+        "notes": "Chỉ trả log của chính user đang đăng nhập (kể cả admin), mới nhất trước, tối đa 100 bản ghi, không phân trang. Gồm cả log do server ghi (resource_type query, document...; không có khoá source) và log do client ghi (source: \"client\")."
+      }
+    },
+    "system": {
+      "health": {
+        "method": "GET",
+        "path": "/health",
+        "auth": false,
+        "statusCode": 200,
+        "response": {
+          "status": "ok | degraded",
+          "app": "string",
+          "env": "string",
+          "components": {
+            "database": "ok | down",
+            "redis": "ok | down",
+            "qdrant": "ok | down"
+          }
+        },
+        "errors": {
+          "503": "Có ít nhất một thành phần down; body cùng hình dạng với status = degraded"
+        },
+        "notes": "Không có tiền tố /api/v1."
       }
     }
   },
   "errors": {
-    "400": "Bad Request — dữ liệu không hợp lệ",
-    "401": "Unauthorized — thiếu hoặc token hết hạn",
-    "403": "Forbidden — không đủ quyền (cần role admin)",
-    "404": "Not Found — resource không tồn tại",
+    "400": "Bad Request — dữ liệu không hợp lệ (vd mã OTP sai/hết hạn)",
+    "401": "Unauthorized — thiếu hoặc token hết hạn/bị thu hồi",
+    "403": "Forbidden — không đủ quyền (cần role admin, cần gói Pro, tài khoản bị khoá, hoặc tự nâng Pro đang tắt)",
+    "404": "Not Found — resource không tồn tại hoặc không thuộc user",
     "409": "Conflict — email đã đăng ký",
-    "413": "Payload Too Large — file > 50MB",
-    "415": "Unsupported Media Type — file không phải pdf/docx/txt",
-    "500": "Internal Server Error — lỗi server"
+    "413": "Payload Too Large — file > 50MB (tài liệu) hoặc ảnh > 8MB",
+    "415": "Unsupported Media Type — file không phải pdf/docx/txt (tài liệu) hoặc png/jpeg/webp (ảnh)",
+    "422": "Unprocessable Entity — body/query không qua kiểm tra; detail là mảng lỗi của FastAPI",
+    "429": "Too Many Requests — vượt rate limit hoặc chưa hết thời gian chờ gửi lại OTP; kèm header Retry-After",
+    "500": "Internal Server Error — lỗi server",
+    "502": "Bad Gateway — lỗi khi gọi LLM (POST /chat)",
+    "503": "Service Unavailable — /health báo có thành phần down"
   }
 }
