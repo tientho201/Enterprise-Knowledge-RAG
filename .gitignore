@@ -12,3 +12,12 @@ report/*
 **/__pycache__/
 *.pyc
 *.pyo
+
+# AI Factory
+.flow/runs/
+.flow/queue/
+.flow/current.json
+.flow/flow
+.flow/approvals_adhoc/
+.flow/telegram_bot.json
+.env.flow
