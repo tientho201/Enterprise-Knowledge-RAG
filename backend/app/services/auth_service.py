@@ -2,6 +2,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import otp
+from app.core.config import settings
 from app.core.plan_gate import can_use_advanced_search
 from app.core.security import (
     create_access_token,
@@ -15,6 +16,7 @@ from app.repositories.user_repo import UserRepository
 from app.schemas.auth import OtpPendingResponse, TokenResponse, UserResponse
 
 _OTP_SENT_MESSAGE = "Mã OTP xác minh đã được gửi tới email của bạn. Vui lòng kiểm tra hộp thư."
+_PRO_UPGRADE_DISABLED_MESSAGE = "Nâng cấp gói Pro cần được quản trị viên kích hoạt."
 
 
 def _to_user_response(user: User) -> UserResponse:
@@ -154,7 +156,19 @@ class AuthService:
 
     async def update_plan(self, user_id: str, plan: UserPlan) -> UserResponse:
         """Self-service demo nâng cấp/hạ cấp gói — KHÔNG có cổng thanh toán thật đứng
-        sau (xem schemas/auth.py::UpdatePlanRequest). User tự đổi plan của chính mình."""
+        sau (xem schemas/auth.py::UpdatePlanRequest). User tự đổi plan của chính mình.
+
+        Tự nâng lên Pro chỉ được phép khi `settings.SELF_SERVICE_PLAN_ENABLED` bật
+        (mặc định tắt) — nếu không ai cũng bỏ qua được gate tính năng trả phí. Hạ về
+        Free luôn được phép. Chặn theo plan ĐÍCH, không theo plan hiện tại: user đang
+        Pro gọi lại "nâng Pro" cũng nhận 403 và không có gì bị ghi (gói Pro sẵn có
+        giữ nguyên) — nhờ vậy không cần đọc DB trước khi từ chối và không mở đường
+        "gia hạn" Pro qua endpoint này về sau."""
+        if plan == UserPlan.pro and not settings.SELF_SERVICE_PLAN_ENABLED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=_PRO_UPGRADE_DISABLED_MESSAGE,
+            )
         user = await self.repo.update_plan(user_id, plan)
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")

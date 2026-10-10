@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.core.config import settings
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.models.user import User, UserPlan, UserRole
@@ -122,8 +123,17 @@ async def test_update_role_unknown_user_404(isolated_app_client):
     assert resp.status_code == 404
 
 
+async def _plan_in_db(session_factory, user_id: str) -> UserPlan:
+    async with session_factory() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        return user.plan
+
+
 @pytest.mark.asyncio
-async def test_self_service_upgrade_to_pro(isolated_app_client):
+async def test_self_service_upgrade_to_pro(isolated_app_client, monkeypatch):
+    # Tự nâng Pro chỉ còn chạy khi cờ demo bật (mặc định tắt) — bật tường minh ở đây.
+    monkeypatch.setattr(settings, "SELF_SERVICE_PLAN_ENABLED", True)
     client, session_factory = isolated_app_client
     _, token = await _create_user(session_factory, role=UserRole.viewer, plan=UserPlan.free)
 
@@ -152,3 +162,106 @@ async def test_self_service_downgrade_to_free(isolated_app_client):
     body = resp.json()
     assert body["plan"] == "free"
     assert body["can_use_advanced_search"] is False
+
+
+# ── Cờ SELF_SERVICE_PLAN_ENABLED (quyết định D1) ─────────────────────────────
+
+
+def test_self_service_plan_flag_defaults_off():
+    # Đọc mặc định khai báo trong code (không phải giá trị .env có thể ghi đè):
+    # mặc định phải là tắt, nếu không gate trả phí vô nghĩa.
+    assert type(settings).model_fields["SELF_SERVICE_PLAN_ENABLED"].default is False
+
+
+@pytest.mark.asyncio
+async def test_upgrade_to_pro_forbidden_when_flag_off(isolated_app_client, monkeypatch):
+    monkeypatch.setattr(settings, "SELF_SERVICE_PLAN_ENABLED", False)
+    client, session_factory = isolated_app_client
+    user_id, token = await _create_user(session_factory, role=UserRole.viewer, plan=UserPlan.free)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post("/api/v1/auth/plan", json={"plan": "pro"}, headers=headers)
+    assert resp.status_code == 403
+    # Frontend (UpgradeModal) hiển thị nguyên văn `detail` cho người dùng.
+    assert resp.json()["detail"] == "Nâng cấp gói Pro cần được quản trị viên kích hoạt."
+
+    me = await client.get("/api/v1/auth/me", headers=headers)
+    assert me.status_code == 200
+    assert me.json()["plan"] == "free"
+    assert me.json()["can_use_advanced_search"] is False
+    assert await _plan_in_db(session_factory, user_id) == UserPlan.free
+
+
+@pytest.mark.asyncio
+async def test_downgrade_to_free_allowed_when_flag_off(isolated_app_client, monkeypatch):
+    monkeypatch.setattr(settings, "SELF_SERVICE_PLAN_ENABLED", False)
+    client, session_factory = isolated_app_client
+    user_id, token = await _create_user(session_factory, role=UserRole.viewer, plan=UserPlan.pro)
+
+    resp = await client.post(
+        "/api/v1/auth/plan",
+        json={"plan": "free"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["plan"] == "free"
+    assert resp.json()["can_use_advanced_search"] is False
+    assert await _plan_in_db(session_factory, user_id) == UserPlan.free
+
+
+@pytest.mark.asyncio
+async def test_upgrade_to_pro_persisted_when_flag_on(isolated_app_client, monkeypatch):
+    monkeypatch.setattr(settings, "SELF_SERVICE_PLAN_ENABLED", True)
+    client, session_factory = isolated_app_client
+    user_id, token = await _create_user(session_factory, role=UserRole.viewer, plan=UserPlan.free)
+
+    resp = await client.post(
+        "/api/v1/auth/plan",
+        json={"plan": "pro"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["plan"] == "pro"
+    assert resp.json()["can_use_advanced_search"] is True
+    assert await _plan_in_db(session_factory, user_id) == UserPlan.pro
+
+
+@pytest.mark.asyncio
+async def test_existing_pro_user_untouched_when_flag_off(isolated_app_client, monkeypatch):
+    # User đã ở Pro gọi lại "nâng Pro" lúc cờ tắt: bị từ chối như mọi yêu cầu lên Pro,
+    # nhưng gói Pro sẵn có KHÔNG bị đụng tới (không hạ, không ghi gì).
+    monkeypatch.setattr(settings, "SELF_SERVICE_PLAN_ENABLED", False)
+    client, session_factory = isolated_app_client
+    user_id, token = await _create_user(session_factory, role=UserRole.viewer, plan=UserPlan.pro)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await client.post("/api/v1/auth/plan", json={"plan": "pro"}, headers=headers)
+    assert resp.status_code == 403
+
+    me = await client.get("/api/v1/auth/me", headers=headers)
+    assert me.json()["plan"] == "pro"
+    assert me.json()["can_use_advanced_search"] is True
+    assert await _plan_in_db(session_factory, user_id) == UserPlan.pro
+
+
+@pytest.mark.asyncio
+async def test_admin_keeps_advanced_access_when_flag_off(isolated_app_client, monkeypatch):
+    # Admin không cần plan Pro để qua gate (core/plan_gate.py). Cờ tắt chặn admin tự
+    # đặt plan=pro cho chính mình như mọi user, nhưng không làm mất quyền Nâng cao
+    # và không ảnh hưởng route quản trị.
+    monkeypatch.setattr(settings, "SELF_SERVICE_PLAN_ENABLED", False)
+    client, session_factory = isolated_app_client
+    _, admin_token = await _create_user(session_factory, role=UserRole.admin)
+    target_id, _ = await _create_user(session_factory, role=UserRole.viewer)
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    resp = await client.post("/api/v1/auth/plan", json={"plan": "pro"}, headers=headers)
+    assert resp.status_code == 403
+
+    me = await client.get("/api/v1/auth/me", headers=headers)
+    assert me.json()["can_use_advanced_search"] is True
+
+    role_resp = await client.patch(
+        f"/api/v1/admin/users/{target_id}/role", json={"role": "editor"}, headers=headers
+    )
+    assert role_resp.status_code == 200

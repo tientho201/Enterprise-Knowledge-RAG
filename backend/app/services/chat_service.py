@@ -1,10 +1,12 @@
 import base64
 import json
+import re
 from collections.abc import AsyncIterator
 from typing import Literal
 
 import openai
 from fastapi import HTTPException, status
+from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import get_agent_graph, get_retrieval_graph
@@ -14,10 +16,12 @@ from app.models.message import MessageRole
 from app.models.message_attachment import MessageAttachment
 from app.rag.response_cache import get_cached_answer, set_cached_answer
 from app.repositories.conversation_repo import ConversationRepository
+from app.repositories.document_repo import DocumentRepository
 from app.repositories.message_attachment_repo import MessageAttachmentRepository
 from app.schemas.chat import (
     AttachmentSchema,
     ChatResponse,
+    CitationSchema,
     ConversationDetailResponse,
     ConversationResponse,
     MessageResponse,
@@ -47,6 +51,80 @@ def _friendly_llm_error(
             f"Chi tiết lỗi: {exc}"
         )
     return str(exc)
+
+
+def _cache_document_scope(
+    document_ids: list[str] | None, excluded_document_ids: list[str]
+) -> list[str] | None:
+    """Phạm vi tài liệu dùng làm cache key của Response Cache.
+
+    Gộp ID tài liệu đang tắt (tiền tố "!", không trùng được UUID thật) vào phần
+    document_ids của key → câu trả lời được cache khi tập tài liệu tắt KHÁC hiện tại
+    (vd dựng lúc tài liệu còn bật) không bao giờ được tra tới, kể cả khi
+    `bump_version` lúc bật/tắt thất bại (Redis lỗi, fail-open). Không có tài liệu
+    tắt → trả nguyên document_ids (key y hệt trước đây).
+    """
+    if not excluded_document_ids:
+        return document_ids
+    return [*(document_ids or []), *(f"!{doc_id}" for doc_id in excluded_document_ids)]
+
+
+# ── Marker trích dẫn trong Message.content ───────────────────────────────────
+# Trích dẫn được lưu ngay trong cột `messages.content` (không có cột riêng):
+#     <answer>\n<!--citations:<JSON list>-->
+# `answer` là văn bản KHÔNG tin cậy (LLM sinh ra, chịu tác động của tài liệu/prompt)
+# nên có thể chứa sẵn một marker giả. Hai hàm thuần dưới đây là nơi DUY NHẤT được
+# ghi/đọc định dạng này (chat(), _persist_assistant(), get_conversation()).
+_CITATION_MARKER_PREFIX = "\n<!--citations:"
+_CITATION_MARKER_SUFFIX = "-->"
+# Mọi biến thể mở đầu marker trong answer (hoa/thường, khoảng trắng chen giữa). Rộng
+# hơn thứ `_decode_citations` chấp nhận (chỉ khớp đúng từng ký tự) — phòng thủ dư.
+_FAKE_MARKER_RE = re.compile(r"<(?=!--\s*citations\s*:)", re.IGNORECASE)
+_CITATION_LIST_ADAPTER = TypeAdapter(list[CitationSchema])
+
+
+def _encode_citations(answer: str, citations: list[dict]) -> str:
+    """Dựng nội dung lưu vào `Message.content`: answer (+ marker trích dẫn ở CUỐI).
+
+    - Vô hiệu hoá mọi marker giả trong answer: ký tự `<` mở đầu → `&lt;`. Chỉ THAY
+      (không xoá) và ký tự thay thế không chứa `<`, nên không thể ghép ra marker mới
+      từ marker lồng nhau. Làm cả khi `citations` rỗng — nếu không, marker giả nằm
+      cuối answer sẽ được đọc lại như marker thật.
+    - JSON: escape `<`/`>` thành `\\u003c`/`\\u003e` (vẫn là JSON hợp lệ, giải mã ra
+      đúng chuỗi cũ) → phần marker không bao giờ chứa `<!--` hay `-->` dù snippet tài
+      liệu có chứa. Kết quả: nội dung mới có đúng MỘT chuỗi `<!--citations:`.
+    - `citations` rỗng → không nối marker (giữ định dạng cũ).
+    """
+    content = _FAKE_MARKER_RE.sub("&lt;", answer)
+    if not citations:
+        return content
+    payload = json.dumps(citations).replace("<", "\\u003c").replace(">", "\\u003e")
+    return f"{content}{_CITATION_MARKER_PREFIX}{payload}{_CITATION_MARKER_SUFFIX}"
+
+
+def _decode_citations(content: str) -> tuple[str, list[CitationSchema]]:
+    """Tách `Message.content` đã lưu thành (answer, citations). Không bao giờ ném lỗi.
+
+    Chỉ chấp nhận marker ở CUỐI nội dung: lấy lần xuất hiện CUỐI CÙNG của
+    `\\n<!--citations:`, và phần từ đó tới hết phải đúng là `<JSON list>-->`. Marker
+    thật không thể chứa một `\\n<!--citations:` khác (JSON strict cấm xuống dòng thô
+    trong chuỗi, `json.dumps` luôn ghi thành `\\\\n`), nên marker giả đứng trước marker
+    thật luôn bị bỏ qua và ở lại trong answer như văn bản thường.
+
+    Marker cuối không hợp lệ (JSON hỏng, không phải list, có phần tử không khớp
+    `CitationSchema`) → trả NGUYÊN content và `[]`: đó không phải marker của hệ thống
+    nên được coi là văn bản câu trả lời, không cắt bỏ thứ không hiểu được.
+    """
+    start = content.rfind(_CITATION_MARKER_PREFIX)
+    if start == -1 or not content.endswith(_CITATION_MARKER_SUFFIX):
+        return content, []
+    payload = content[start + len(_CITATION_MARKER_PREFIX) : -len(_CITATION_MARKER_SUFFIX)]
+    try:
+        citations = _CITATION_LIST_ADAPTER.validate_python(json.loads(payload))
+    except (ValueError, RecursionError):
+        # ValueError gồm cả json.JSONDecodeError và pydantic.ValidationError.
+        return content, []
+    return content[:start], citations
 
 
 class ChatService:
@@ -120,13 +198,23 @@ class ChatService:
         # Data isolation: retrieval chỉ chạm chunk của user (owner_id=user_id).
         # Admin → owner_id=None → không filter, truy hồi mọi chunk. Mirror document_service.
         owner_id = None if is_admin else user_id
+        # Tài liệu đang tắt (is_active=False) của đúng phạm vi owner này phải bị loại khỏi
+        # retrieval. FAIL-CLOSED: không try/except — DB lỗi thì request lỗi, tuyệt đối
+        # không chạy retrieval không lọc. Lấy TRƯỚC khi đọc cache để cache hit cũng
+        # không trả câu trả lời dựng từ tài liệu đã tắt (xem _cache_document_scope).
+        excluded_document_ids = await DocumentRepository(self.db).list_inactive_ids(owner_id)
+        cache_document_ids = _cache_document_scope(document_ids, excluded_document_ids)
         graph = get_agent_graph()
 
         # Response Cache exact-match (Task 5.2, xem app/rag/response_cache.py) — chỉ
-        # áp dụng case "đơn giản" (không web search/ảnh/custom prompt/BYOM/advanced
-        # mode), vì các case đó có biến số không nằm trong cache key, cache sẽ trả
-        # sai nếu tái dùng. owner_id LUÔN có trong key (bên trong response_cache) —
-        # bắt buộc để không lộ câu trả lời chéo user.
+        # áp dụng case "đơn giản" (không web search/ảnh/custom prompt/BYOM, và chỉ
+        # search_mode mặc định), vì các case đó có biến số không nằm trong cache key,
+        # cache sẽ trả sai nếu tái dùng. owner_id LUÔN có trong key (bên trong
+        # response_cache) — bắt buộc để không lộ câu trả lời chéo user.
+        # search_mode KHÔNG nằm trong cache key → chỉ None/"hybrid" (cùng một đường
+        # truy hồi) được đọc/ghi cache. "vector" (dense-only), "keyword", "advanced"
+        # đều bỏ qua cache cả hai chiều, nếu không các chế độ sẽ trả lẫn câu trả lời
+        # của nhau. /chat/stream không dùng response cache nên không cần điều kiện này.
         cache_eligible = (
             not search_tool
             and not image_data_urls
@@ -134,10 +222,12 @@ class ChatService:
             and not model
             and not api_key
             and not base_url
-            and (search_mode or "hybrid") != "advanced"
+            and search_mode in (None, "hybrid")
         )
         cached = (
-            await get_cached_answer(message, owner_id, document_ids) if cache_eligible else None
+            await get_cached_answer(message, owner_id, cache_document_ids)
+            if cache_eligible
+            else None
         )
 
         final_state: dict
@@ -173,6 +263,7 @@ class ChatService:
                 "search_tool": search_tool,
                 "document_ids": document_ids,
                 "owner_id": owner_id,
+                "excluded_document_ids": excluded_document_ids,
                 "top_k": top_k,
                 "similarity_threshold": similarity_threshold,
                 "system_prompt": system_prompt,
@@ -211,7 +302,7 @@ class ChatService:
                 await set_cached_answer(
                     message,
                     owner_id,
-                    document_ids,
+                    cache_document_ids,
                     {
                         "final_answer": final_state.get("final_answer"),
                         "citations": final_state.get("citations", []),
@@ -227,11 +318,7 @@ class ChatService:
         suggested_documents = final_state.get("suggested_documents", [])
 
         # Save assistant message
-        import json
-
-        content_to_save = answer
-        if citations:
-            content_to_save += f"\n<!--citations:{json.dumps(citations)}-->"
+        content_to_save = _encode_citations(answer, citations)
         assistant_msg = await self.repo.add_message(conv.id, MessageRole.assistant, content_to_save)
 
         # Save citations to DB (skip web citations which are not in local DB chunks table)
@@ -290,9 +377,7 @@ class ChatService:
         dlp_reason: str | None = None,
     ):
         """Lưu message assistant + citations + audit log (dùng chung cho luồng stream)."""
-        content_to_save = answer
-        if citations:
-            content_to_save += f"\n<!--citations:{json.dumps(citations)}-->"
+        content_to_save = _encode_citations(answer, citations)
         assistant_msg = await self.repo.add_message(conv_id, MessageRole.assistant, content_to_save)
 
         if citations:
@@ -371,6 +456,9 @@ class ChatService:
 
             # Chạy pipeline retrieval (dừng trước generator)
             owner_id = None if is_admin else user_id
+            # Loại tài liệu đang tắt — mirror chat(). FAIL-CLOSED: lỗi DB rơi vào except
+            # bên dưới (phát event error), retrieval KHÔNG chạy.
+            excluded_document_ids = await DocumentRepository(self.db).list_inactive_ids(owner_id)
             initial_state: AgentState = {
                 "query": message,
                 "intent": "",
@@ -386,6 +474,7 @@ class ChatService:
                 "search_tool": search_tool,
                 "document_ids": document_ids,
                 "owner_id": owner_id,
+                "excluded_document_ids": excluded_document_ids,
                 "top_k": top_k,
                 "similarity_threshold": similarity_threshold,
                 "system_prompt": system_prompt,
@@ -526,21 +615,12 @@ class ChatService:
                 status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
             )
 
-        import json
-        import re
-
         messages = []
         for m in conv.messages:
             content = m.content
-            citations = []
+            citations: list[CitationSchema] = []
             if m.role == MessageRole.assistant:
-                match = re.search(r"<!--citations:(.*?)-->", content, re.DOTALL)
-                if match:
-                    try:
-                        citations = json.loads(match.group(1))
-                    except Exception:
-                        pass
-                    content = re.sub(r"\s*<!--citations:.*?-->", "", content, flags=re.DOTALL)
+                content, citations = _decode_citations(content)
 
             attachments = []
             for att in m.attachments:

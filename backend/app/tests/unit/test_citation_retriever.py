@@ -4,7 +4,18 @@ _owner_clause, _in_scope, và bộ phân loại context-vs-suggestion _classify.
 Test Neo4j-dependent (Cypher traversal thật) nằm ở
 tests/integration/test_citation_retrieval.py (@pytest.mark.neo4j)."""
 
-from app.rag.citation_retriever import _classify, _format_node_label, _in_scope, _owner_clause
+import inspect
+
+import pytest
+
+from app.rag.citation_retriever import (
+    _classify,
+    _format_node_label,
+    _in_scope,
+    _is_excluded,
+    _owner_clause,
+    graph_augmented_search,
+)
 
 # ── _format_node_label ─────────────────────────────────────────────────────────
 
@@ -457,3 +468,294 @@ def test_classify_full_mix_matches_task_scenario():
         n for n in only_a_attached.citation_graph_nodes if n["address"] == "owner_x:B:DIEU_2"
     )
     assert b_node["content"] is None
+
+
+# ── Tài liệu đang tắt: _is_excluded / _in_scope ───────────────────────────────
+
+
+def test_is_excluded_none_or_empty_excludes_nothing():
+    assert _is_excluded("doc-1", None) is False
+    assert _is_excluded("doc-1", []) is False
+    assert _is_excluded(None, ["doc-1"]) is False
+
+
+def test_is_excluded_matches_listed_document():
+    assert _is_excluded("doc-1", ["doc-1"]) is True
+    assert _is_excluded("doc-2", ["doc-1"]) is False
+
+
+def test_in_scope_excluded_document_is_out_of_scope_when_unrestricted():
+    # document_ids=None (cả thư viện) KHÔNG được mở lại tài liệu đang tắt.
+    assert _in_scope("doc-1", None, ["doc-1"]) is False
+    assert _in_scope("doc-2", None, ["doc-1"]) is True
+
+
+def test_in_scope_excluded_wins_over_explicit_document_ids():
+    # Client gửi đích danh ID tài liệu đang tắt trong document_ids vẫn bị loại.
+    assert _in_scope("doc-1", ["doc-1", "doc-2"], ["doc-1"]) is False
+    assert _in_scope("doc-2", ["doc-1", "doc-2"], ["doc-1"]) is True
+
+
+def test_in_scope_exclusion_never_widens_document_ids():
+    # Loại trừ chỉ thu hẹp: tài liệu ngoài document_ids vẫn ngoài phạm vi.
+    assert _in_scope("doc-3", ["doc-1"], ["doc-9"]) is False
+    assert _in_scope(None, None, ["doc-9"]) is False
+
+
+@pytest.mark.parametrize("excluded", [None, []])
+def test_in_scope_default_and_empty_exclusion_match_legacy_behaviour(excluded):
+    for document_id in (None, "doc-1", "doc-3"):
+        for document_ids in (None, [], ["doc-1", "doc-2"]):
+            assert _in_scope(document_id, document_ids, excluded) == _in_scope(
+                document_id, document_ids
+            )
+
+
+# ── Tài liệu đang tắt: _classify ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("document_ids", [None, ["doc-A", "doc-B"]])
+def test_classify_related_of_excluded_document_not_in_context(document_ids):
+    # doc-B đang tắt. Dù hội thoại không giới hạn tài liệu (None) hay gắn đích danh
+    # doc-B, Provision của doc-B KHÔNG được vào context và KHÔNG lộ content.
+    anchors = {"owner_x:LAW1:DIEU_5": _anchor_row()}
+    related = {"owner_x:LAW2:DIEU_10": _related_row()}
+    result = _classify(anchors, related, [], document_ids, excluded_document_ids=["doc-B"])
+
+    assert [c.chunk_id for c in result.context_chunks] == ["chunk-1"]
+    assert all(c.document_id != "doc-B" for c in result.context_chunks)
+    assert "Nội dung Điều 10 của Luật 2" not in [c.content for c in result.context_chunks]
+    assert result.citation_graph_path == [
+        {
+            "from_address": "owner_x:LAW1:DIEU_5",
+            "to_address": "owner_x:LAW2:DIEU_10",
+            "relation": "VIEN_DAN",
+            "hops": 1,
+            "in_context": False,
+        }
+    ]
+    b_node = next(n for n in result.citation_graph_nodes if n["address"] == "owner_x:LAW2:DIEU_10")
+    assert b_node["node_type"] == "out_of_scope"
+    assert b_node["content"] is None
+    # Vẫn là tài liệu của owner -> chỉ còn là gợi ý (metadata), giống tài liệu chưa gắn.
+    assert result.suggested_documents == [
+        {
+            "document_code": "LAW2",
+            "document_id": "doc-B",
+            "name": "Luật B",
+            "in_library": True,
+            "cited_from": "owner_x:LAW1:DIEU_5",
+        }
+    ]
+
+
+def test_classify_anchor_of_excluded_document_is_dropped_with_its_edges():
+    # Defense-in-depth: anchor thuộc tài liệu đang tắt (dense search lọc sót) bị bỏ
+    # hẳn, kéo theo mọi cạnh/related/legal doc xuất phát từ nó.
+    anchors = {"owner_x:LAW1:DIEU_5": _anchor_row()}
+    related = {"owner_x:LAW2:DIEU_10": _related_row()}
+    legal = [_legal_doc_row()]
+    result = _classify(anchors, related, legal, None, excluded_document_ids=["doc-A"])
+
+    assert result.context_chunks == []
+    assert result.citation_graph_path == []
+    assert result.citation_graph_nodes == []
+    assert result.suggested_documents == []
+
+
+def test_classify_only_excluded_anchor_dropped_other_anchor_kept():
+    anchors = {
+        "owner_x:LAW1:DIEU_5": _anchor_row(),
+        "owner_x:LAW5:DIEU_1": _anchor_row(
+            legal_address="owner_x:LAW5:DIEU_1",
+            document_code="LAW5",
+            content="Nội dung tài liệu tắt",
+            chunk_id="chunk-off",
+            document_id="doc-OFF",
+            document_name="Luật tắt",
+        ),
+    }
+    result = _classify(anchors, {}, [], None, excluded_document_ids=["doc-OFF"])
+
+    assert [c.chunk_id for c in result.context_chunks] == ["chunk-1"]
+    assert [n["address"] for n in result.citation_graph_nodes] == ["owner_x:LAW1:DIEU_5"]
+
+
+def test_classify_legal_document_resolving_to_excluded_document_is_not_in_scope():
+    # LegalDocument resolve về tài liệu đang tắt: không được coi là "đã trong phạm vi"
+    # (không có gì của nó ở trong context) -> vẫn là gợi ý; không bao giờ có content.
+    rows = [_legal_doc_row(document_id="doc-A")]
+    result = _classify({}, {}, rows, ["doc-A"], excluded_document_ids=["doc-A"])
+
+    assert result.context_chunks == []
+    assert [s["document_id"] for s in result.suggested_documents] == ["doc-A"]
+    assert result.citation_graph_nodes[0]["content"] is None
+
+
+@pytest.mark.parametrize("excluded", [None, []])
+@pytest.mark.parametrize("document_ids", [None, ["doc-A"], ["doc-A", "doc-B"]])
+def test_classify_default_and_empty_exclusion_match_legacy_behaviour(document_ids, excluded):
+    anchors = {"owner_x:LAW1:DIEU_5": _anchor_row()}
+    related = {
+        "owner_x:LAW2:DIEU_10": _related_row(),
+        "owner_x:LAW3:DIEU_1": _related_row(
+            legal_address="owner_x:LAW3:DIEU_1",
+            document_code="LAW3",
+            is_placeholder=True,
+            chunk_id=None,
+            document_id=None,
+            document_name=None,
+        ),
+    }
+    legal = [_legal_doc_row(), _legal_doc_row(legal_address="owner_x:LAW6", document_id="doc-A")]
+
+    legacy = _classify(anchors, related, legal, document_ids)
+    assert _classify(anchors, related, legal, document_ids, excluded) == legacy
+    assert (
+        _classify(anchors, related, legal, document_ids, excluded_document_ids=excluded) == legacy
+    )
+
+
+# ── Tài liệu đang tắt: graph_augmented_search (Neo4j giả, không cần dịch vụ thật) ──
+
+
+class _FakeResult:
+    def __init__(self, rows: list[dict]):
+        self._rows = rows
+
+    def data(self) -> list[dict]:
+        return self._rows
+
+
+class _FakeSession:
+    """Trả kết quả theo loại truy vấn và ghi lại (cypher, params) của mọi lời gọi."""
+
+    def __init__(self, anchor_rows, related_rows, legal_rows):
+        self._anchor_rows = anchor_rows
+        self._related_rows = related_rows
+        self._legal_rows = legal_rows
+        self.calls: list[tuple[str, dict]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def run(self, cypher: str, **params) -> _FakeResult:
+        self.calls.append((cypher, params))
+        if "seed_chunk" in cypher:
+            return _FakeResult(self._anchor_rows)
+        if "VIEN_DAN_VAN_BAN" in cypher:
+            return _FakeResult(self._legal_rows)
+        return _FakeResult(self._related_rows)
+
+
+class _FakeDriver:
+    def __init__(self, session: _FakeSession):
+        self._session = session
+
+    def session(self) -> _FakeSession:
+        return self._session
+
+
+@pytest.fixture
+def fake_neo4j(monkeypatch):
+    def _install(anchor_rows, related_rows=(), legal_rows=()) -> _FakeSession:
+        session = _FakeSession(list(anchor_rows), list(related_rows), list(legal_rows))
+        monkeypatch.setattr("app.rag.graph_client.get_neo4j_driver", lambda: _FakeDriver(session))
+        return session
+
+    return _install
+
+
+def test_graph_augmented_search_signature_keeps_positional_order():
+    # test integration và agents/retriever.py gọi 3 tham số đầu theo vị trí; tham số
+    # mới phải là keyword-only và mặc định None (không truyền = hành vi cũ).
+    params = inspect.signature(graph_augmented_search).parameters
+    assert list(params) == ["seed_chunk_ids", "document_ids", "owner_id", "excluded_document_ids"]
+    assert params["excluded_document_ids"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["excluded_document_ids"].default is None
+
+
+def test_graph_augmented_search_excluded_related_provision_not_in_context(fake_neo4j):
+    session = fake_neo4j([_anchor_row()], [_related_row()])
+
+    result = graph_augmented_search(["chunk-1"], None, "owner-1", excluded_document_ids=["doc-B"])
+
+    assert [c.chunk_id for c in result.context_chunks] == ["chunk-1"]
+    assert all(c.document_id != "doc-B" for c in result.context_chunks)
+    b_node = next(n for n in result.citation_graph_nodes if n["address"] == "owner_x:LAW2:DIEU_10")
+    assert b_node["content"] is None
+    # Provision của tài liệu tắt không làm nguồn mở rộng VIEN_DAN_VAN_BAN: cả địa chỉ
+    # Provision lẫn LegalDocument của văn bản chứa nó (LAW2) đều không được truy vấn.
+    legal_addrs = [
+        addr for cypher, p in session.calls if "VIEN_DAN_VAN_BAN" in cypher for addr in p["addrs"]
+    ]
+    assert legal_addrs
+    assert not any("LAW2" in addr for addr in legal_addrs)
+
+
+def test_graph_augmented_search_excluded_anchor_stops_traversal(fake_neo4j):
+    # Seed thuộc tài liệu tắt -> kết quả rỗng và KHÔNG chạy truy vấn mở rộng nào.
+    session = fake_neo4j([_anchor_row()], [_related_row()], [_legal_doc_row()])
+
+    result = graph_augmented_search(["chunk-1"], None, "owner-1", excluded_document_ids=["doc-A"])
+
+    assert result.context_chunks == []
+    assert result.citation_graph_path == []
+    assert result.citation_graph_nodes == []
+    assert result.suggested_documents == []
+    assert len(session.calls) == 1
+
+
+def test_graph_augmented_search_mixed_anchors_only_traverses_from_active(fake_neo4j):
+    off_anchor = _anchor_row(
+        legal_address="owner_x:LAW5:DIEU_1",
+        document_code="LAW5",
+        chunk_id="chunk-off",
+        document_id="doc-OFF",
+    )
+    session = fake_neo4j([_anchor_row(), off_anchor])
+
+    result = graph_augmented_search(
+        ["chunk-1", "chunk-off"], None, "owner-1", excluded_document_ids=["doc-OFF"]
+    )
+
+    assert [c.chunk_id for c in result.context_chunks] == ["chunk-1"]
+    assert len(session.calls) > 1
+    for cypher, params in session.calls[1:]:
+        sources = params.get("anchors") or params.get("addrs")
+        assert not any("LAW5" in addr for addr in sources), cypher
+
+
+@pytest.mark.parametrize("owner_id", ["owner-1", None])
+def test_graph_augmented_search_exclusion_keeps_owner_filter(fake_neo4j, owner_id):
+    # Thêm loại trừ KHÔNG được nới filter owner_id: mọi truy vấn vẫn nhận đúng
+    # owner_id và (với non-admin) vẫn chứa mệnh đề owner_id trong Cypher.
+    with_exclusion = fake_neo4j([_anchor_row()], [_related_row()])
+    graph_augmented_search(["chunk-1"], None, owner_id, excluded_document_ids=["doc-B"])
+    without = fake_neo4j([_anchor_row()], [_related_row()])
+    graph_augmented_search(["chunk-1"], None, owner_id)
+
+    assert len(with_exclusion.calls) == 4
+    for cypher, params in with_exclusion.calls:
+        assert params["owner_id"] == owner_id
+        assert ("owner_id = $owner_id" in cypher) is (owner_id is not None)
+    # Cypher không đổi theo tham số mới — loại trừ chỉ thu hẹp ở bước hậu xử lý.
+    assert [c for c, _ in with_exclusion.calls] == [c for c, _ in without.calls]
+
+
+@pytest.mark.parametrize("excluded", [None, []])
+def test_graph_augmented_search_default_matches_legacy_behaviour(fake_neo4j, excluded):
+    rows = ([_anchor_row()], [_related_row()], [_legal_doc_row()])
+    legacy_session = fake_neo4j(*rows)
+    legacy = graph_augmented_search(["chunk-1"], ["doc-A", "doc-B"], "owner-1")
+    session = fake_neo4j(*rows)
+    result = graph_augmented_search(
+        ["chunk-1"], ["doc-A", "doc-B"], "owner-1", excluded_document_ids=excluded
+    )
+
+    assert result == legacy
+    assert {c.chunk_id for c in result.context_chunks} == {"chunk-1", "chunk-2"}
+    assert session.calls == legacy_session.calls

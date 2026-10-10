@@ -114,6 +114,22 @@ class DocumentRepository:
         rows = await self.db.execute(query)
         return list(rows.scalars().all())
 
+    async def list_inactive_ids(self, owner_id: str | None) -> list[str]:
+        """ID các tài liệu (chưa xóa) đang tắt (`is_active=False`) — để loại khỏi RAG.
+
+        `owner_id=None` → mọi doc đang tắt (admin); có giá trị → chỉ doc của user đó
+        (data isolation). `owner_id` bắt buộc truyền tường minh (không có default) để
+        caller không vô tình lấy phạm vi admin.
+        """
+        query = select(Document.id).where(
+            Document.deleted_at.is_(None),
+            Document.is_active.is_(False),
+        )
+        if owner_id is not None:
+            query = query.where(Document.owner_id == owner_id)
+        rows = await self.db.execute(query)
+        return list(rows.scalars().all())
+
     async def list_with_conversations(
         self, skip: int = 0, limit: int = 20, owner_id: str | None = None
     ) -> tuple[list[Document], int]:

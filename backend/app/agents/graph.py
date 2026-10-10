@@ -1,10 +1,11 @@
 """
 LangGraph agent graph definition.
-Flow: START → Guardrail → Router → [Retriever → Grader → (Rewriter →)* Generator] → END
+Flow: START → Guardrail → Router → [Contextualizer → Retriever → Grader → (Rewriter →)* Generator] → END
 """
 
 from langgraph.graph import END, START, StateGraph
 
+from app.agents.contextualizer import contextualizer_node
 from app.agents.generator import generator_node
 from app.agents.grader import grader_node
 from app.agents.guardrail import guardrail_node
@@ -24,7 +25,7 @@ def should_route(state: AgentState) -> str:
 
 
 def should_retrieve(state: AgentState) -> str:
-    """Route after router: rag → retrieve, others → generate."""
+    """Route after router: rag → retrieve (qua contextualizer trước), others → generate."""
     if state["intent"] == "rag":
         return "retrieve"
     return "generate"
@@ -42,6 +43,7 @@ def build_graph() -> StateGraph:
 
     graph.add_node("guardrail", guardrail_node)
     graph.add_node("router", router_node)
+    graph.add_node("contextualizer", contextualizer_node)
     graph.add_node("retriever", retriever_node)
     graph.add_node("grader", grader_node)
     graph.add_node("rewriter", rewriter_node)
@@ -52,8 +54,10 @@ def build_graph() -> StateGraph:
         "guardrail", should_route, {"route": "router", "generate": "generator"}
     )
     graph.add_conditional_edges(
-        "router", should_retrieve, {"retrieve": "retriever", "generate": "generator"}
+        "router", should_retrieve, {"retrieve": "contextualizer", "generate": "generator"}
     )
+    # Contextualizer chỉ chạy MỘT lần trên đường vào; vòng rewriter → retriever không qua lại nó.
+    graph.add_edge("contextualizer", "retriever")
     graph.add_edge("retriever", "grader")
     graph.add_conditional_edges(
         "grader", should_rewrite, {"rewrite": "rewriter", "generate": "generator"}
@@ -74,6 +78,7 @@ def build_retrieval_graph() -> StateGraph:
 
     graph.add_node("guardrail", guardrail_node)
     graph.add_node("router", router_node)
+    graph.add_node("contextualizer", contextualizer_node)
     graph.add_node("retriever", retriever_node)
     graph.add_node("grader", grader_node)
     graph.add_node("rewriter", rewriter_node)
@@ -81,8 +86,10 @@ def build_retrieval_graph() -> StateGraph:
     graph.add_edge(START, "guardrail")
     graph.add_conditional_edges("guardrail", should_route, {"route": "router", "generate": END})
     graph.add_conditional_edges(
-        "router", should_retrieve, {"retrieve": "retriever", "generate": END}
+        "router", should_retrieve, {"retrieve": "contextualizer", "generate": END}
     )
+    # Contextualizer chỉ chạy MỘT lần trên đường vào; vòng rewriter → retriever không qua lại nó.
+    graph.add_edge("contextualizer", "retriever")
     graph.add_edge("retriever", "grader")
     graph.add_conditional_edges("grader", should_rewrite, {"rewrite": "rewriter", "generate": END})
     graph.add_edge("rewriter", "retriever")

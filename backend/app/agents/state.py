@@ -1,4 +1,4 @@
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from app.rag.retriever import RetrievedChunk
 
@@ -19,6 +19,11 @@ class AgentState(TypedDict):
     document_ids: list[str] | None
     # Data isolation: chỉ truy hồi chunk của owner này. None = admin/không filter.
     owner_id: str | None
+    # ID tài liệu đang tắt (Document.is_active=False) PHẢI loại khỏi mọi nhánh truy hồi
+    # (dense Qdrant, graph Neo4j, citation graph) — áp dụng CÙNG với filter owner_id/document_ids,
+    # không thay thế chúng. None/rỗng/thiếu key = không loại gì (hành vi y hệt trước đây).
+    # NotRequired: nơi dựng initial_state chưa truyền field này vẫn hợp lệ → đọc bằng state.get().
+    excluded_document_ids: NotRequired[list[str] | None]
     # Chế độ tra cứu chọn ở panel Cấu hình (mirror schemas/chat.py::ChatRequest.search_mode).
     # None/"hybrid"/"vector"/"keyword" → retriever_node chạy hybrid như cũ. "advanced" →
     # thêm graph-augmented retrieval qua Provision layer (rag/citation_retriever.py) —
@@ -47,6 +52,11 @@ class AgentState(TypedDict):
     # Data URI base64 sẵn sàng đưa vào content part {"type":"image_url","image_url":{"url":...}}.
     # None/rỗng → hành vi y hệt trước đây (regression-safe).
     image_data_urls: list[str] | None
+    # Lịch sử hội thoại: các lượt TRƯỚC câu hỏi hiện tại (không gồm `query`), thứ tự cũ trước
+    # mới sau. Mỗi phần tử dạng {"role": "user" | "assistant", "content": str}.
+    # None/rỗng/thiếu key = không có lịch sử → mỗi lượt xử lý độc lập như trước đây.
+    # NotRequired: đọc bằng state.get("history").
+    history: NotRequired[list[dict] | None]
     # DLP tối thiểu (xem agents/dlp.py) — generator_node set sau khi có final_answer.
     # True = câu trả lời có dấu hiệu "bulk extraction" (nguyên văn dài từ nhiều tài liệu).
     # KHÔNG chặn — chat_service.py dùng field này để ghi audit log riêng.
