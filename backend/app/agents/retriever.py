@@ -73,15 +73,15 @@ async def retriever_node(state: AgentState) -> AgentState:
     dense_results = _drop_excluded(dense_results, excluded_document_ids)
 
     if vector_only:
-        # Dense-only: node này có 3 chỗ chạm Neo4j — `_graph_search` gọi trực tiếp,
-        # `retrieve()` (bên trong tự gọi `_graph_search` lần nữa) và
-        # `graph_augmented_search` (chỉ khi "advanced"). Nhánh này bỏ CẢ hai chỗ đầu;
-        # chỗ thứ ba không chạy vì search_mode không thể vừa "vector" vừa "advanced".
+        # Dense-only: node này có 2 chỗ chạm Neo4j — `_graph_search` (nhánh hybrid bên
+        # dưới) và `graph_augmented_search` (chỉ khi "advanced"). Nhánh này bỏ chỗ đầu
+        # và không gọi `merge()` (không có kết quả graph để trộn); chỗ thứ hai không
+        # chạy vì search_mode không thể vừa "vector" vừa "advanced".
         # Bộ lọc bảo mật không đổi: dense_results ở trên đã qua filter Qdrant
         # (owner_id / document_ids / excluded_document_ids) và `_drop_excluded`.
         # Điểm là cosine THÔ của Qdrant, KHÔNG chuẩn hoá/nhân trọng số 0.7 như hybrid.
         # Bản sao (replace) để merged_results không dùng chung object với dense_results
-        # — giống đường hybrid, nơi `retrieve()` trả về object riêng.
+        # — giống đường hybrid, nơi `merge()` trả về bản sao riêng.
         graph_results: list[RetrievedChunk] = []
         merged_results = _drop_excluded(
             sorted((replace(c) for c in dense_results), key=lambda x: x.score, reverse=True),

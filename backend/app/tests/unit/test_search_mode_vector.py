@@ -3,7 +3,8 @@
 Ba lớp kiểm:
 
 1. `retriever_node` với HybridRetriever GIẢ (ghi lại lời gọi): "vector" không gọi
-   `_graph_search` lẫn `retrieve`; merged_results = kết quả dense theo điểm giảm dần.
+   `_graph_search`, `merge` lẫn `retrieve`; merged_results = kết quả dense theo điểm
+   giảm dần. Các chế độ khác (sau T24): 1 `_graph_search` + 1 `merge`, không `retrieve`.
 2. `retriever_node` với HybridRetriever THẬT, Qdrant (httpx) và Neo4j driver giả: đếm
    số lần lấy Neo4j driver để bắt cả đường GIÁN TIẾP (`retrieve()` tự gọi
    `_graph_search`), và kiểm payload gửi Qdrant vẫn mang đủ bộ lọc bảo mật.
@@ -78,6 +79,7 @@ class _Recorder:
         self.calls: dict[str, list[tuple[tuple, dict]]] = {
             "dense": [],
             "graph": [],
+            "merge": [],
             "retrieve": [],
             "citation": [],
         }
@@ -88,8 +90,10 @@ class _Recorder:
             _chunk("c-low", "d1", 0.31),
         ]
         self.graph_return = {"g1": (_chunk("g1", "d1", 1.0), 1.0)}
-        # Điểm hybrid khác hẳn điểm dense để lộ ra nếu nhánh vector lỡ dùng retrieve().
-        self.retrieve_return = [_chunk("c-top", "d2", 0.7), _chunk("g1", "d1", 0.3)]
+        # Điểm hybrid khác hẳn điểm dense để lộ ra nếu nhánh vector lỡ dùng merge().
+        self.merge_return = [_chunk("c-top", "d2", 0.7), _chunk("g1", "d1", 0.3)]
+        # Dữ liệu lạ: lộ ngay nếu node (bất kỳ chế độ nào) còn lấy kết quả từ retrieve().
+        self.retrieve_return = [_chunk("from-retrieve", "d1", 0.123)]
 
 
 @pytest.fixture
@@ -104,6 +108,13 @@ def rec(monkeypatch) -> _Recorder:
         def _graph_search(self, *args, **kwargs):
             recorder.calls["graph"].append((args, kwargs))
             return dict(recorder.graph_return)
+
+        # Chữ ký khớp HybridRetriever.merge: gọi lệch (thiếu/thừa tham số) → TypeError.
+        def merge(self, dense_results, graph_results, *, excluded_document_ids=None):
+            recorder.calls["merge"].append(
+                ((dense_results, graph_results), {"excluded_document_ids": excluded_document_ids})
+            )
+            return list(recorder.merge_return)
 
         def retrieve(self, *args, **kwargs):
             recorder.calls["retrieve"].append((args, kwargs))
@@ -125,6 +136,7 @@ class TestVectorModeNode:
 
         assert len(rec.calls["dense"]) == 1
         assert rec.calls["graph"] == []
+        assert rec.calls["merge"] == []
         assert rec.calls["retrieve"] == []  # retrieve() tự gọi _graph_search bên trong
         assert rec.calls["citation"] == []
 
@@ -186,6 +198,7 @@ class TestVectorModeNode:
         assert result["merged_results"] == []
         assert result["graph_results"] == []
         assert rec.calls["graph"] == []
+        assert rec.calls["merge"] == []
         assert rec.calls["retrieve"] == []
 
     async def test_vector_merged_does_not_alias_dense_objects(self, rec):
@@ -213,6 +226,7 @@ class TestVectorModeNode:
         assert embedder.queries == ["nghỉ phép năm"]
         assert len(rec.calls["dense"]) == 1
         assert rec.calls["graph"] == []
+        assert rec.calls["merge"] == []
         assert rec.calls["retrieve"] == []
 
 
@@ -222,8 +236,12 @@ class TestOtherModesStayHybrid:
         result = await retriever_node(_state(search_mode=mode))
 
         assert len(rec.calls["graph"]) == 1
-        assert len(rec.calls["retrieve"]) == 1
-        assert result["merged_results"] == rec.retrieve_return
+        assert len(rec.calls["merge"]) == 1
+        assert rec.calls["retrieve"] == []
+        ((args, kwargs),) = rec.calls["merge"]
+        assert args == (rec.dense_return, rec.graph_return)
+        assert kwargs == {"excluded_document_ids": None}  # state không có danh sách loại trừ
+        assert result["merged_results"] == rec.merge_return
         assert [c.chunk_id for c in result["graph_results"]] == ["g1"]
 
     async def test_missing_search_mode_key_is_hybrid(self, rec):
@@ -233,7 +251,20 @@ class TestOtherModesStayHybrid:
         await retriever_node(state)
 
         assert len(rec.calls["graph"]) == 1
-        assert len(rec.calls["retrieve"]) == 1
+        assert len(rec.calls["merge"]) == 1
+        assert rec.calls["retrieve"] == []
+        assert rec.calls["merge"][0][1] == {"excluded_document_ids": None}
+
+    @pytest.mark.parametrize("mode", [None, "hybrid", "keyword", "advanced"])
+    async def test_hybrid_merge_receives_exclusion_list(self, rec, mode):
+        """Sau T24 node gọi thẳng `merge()`: danh sách loại trừ PHẢI tới được nó (mặc
+        định None = không loại gì, và `_drop_excluded` của node che mất lỗi ở đầu ra)."""
+        await retriever_node(_state(search_mode=mode, excluded_document_ids=["d9", "d8"]))
+
+        ((args, kwargs),) = rec.calls["merge"]
+        assert args == (rec.dense_return, rec.graph_return)
+        assert kwargs == {"excluded_document_ids": ["d9", "d8"]}
+        assert rec.calls["retrieve"] == []
 
     @pytest.mark.parametrize("mode", ["keyword", "VECTOR", "Vector", " vector", "", "dense", "xyz"])
     async def test_keyword_and_unknown_values_keep_hybrid_behaviour(self, rec, mode):
@@ -242,15 +273,19 @@ class TestOtherModesStayHybrid:
         result = await retriever_node(_state(search_mode=mode))
 
         assert len(rec.calls["graph"]) == 1
-        assert len(rec.calls["retrieve"]) == 1
+        assert len(rec.calls["merge"]) == 1
+        assert rec.calls["retrieve"] == []
+        assert rec.calls["merge"][0][1] == {"excluded_document_ids": None}
         assert rec.calls["citation"] == []
-        assert result["merged_results"] == rec.retrieve_return
+        assert result["merged_results"] == rec.merge_return
 
     async def test_advanced_still_runs_hybrid_plus_citation_graph(self, rec):
         await retriever_node(_state(search_mode="advanced", excluded_document_ids=["d9"]))
 
         assert len(rec.calls["graph"]) == 1
-        assert len(rec.calls["retrieve"]) == 1
+        assert len(rec.calls["merge"]) == 1
+        assert rec.calls["retrieve"] == []
+        assert rec.calls["merge"][0][1] == {"excluded_document_ids": ["d9"]}
         ((args, kwargs),) = rec.calls["citation"]
         assert args[1:] == (["d1", "d2"], "user-a")
         assert kwargs == {"excluded_document_ids": ["d9"]}
@@ -339,16 +374,19 @@ class TestVectorModeNeverTouchesNeo4j:
 
     @pytest.mark.parametrize("mode", [None, "hybrid", "keyword"])
     async def test_control_hybrid_modes_do_reach_neo4j(self, infra, mode):
-        """Đối chứng: bộ đếm bắt được cả lời gọi trực tiếp lẫn gián tiếp qua retrieve()."""
+        """Đối chứng: bộ đếm bắt được lời gọi Neo4j của đường hybrid."""
         await retriever_node(_state(search_mode=mode))
 
-        # 1 lần `_graph_search` trực tiếp + 1 lần bên trong `retrieve()` (gộp là T24).
-        assert infra.neo4j_driver_requests == 2
+        # Sau T24: đúng 1 lần `_graph_search` (node không còn gọi `retrieve()`, thứ từng
+        # chạy lại cả dense lẫn graph → 2 lần mỗi loại).
+        assert infra.neo4j_driver_requests == 1
+        assert len(infra.qdrant_payloads) == 1
 
-    async def test_control_advanced_reaches_neo4j_three_times(self, infra):
+    async def test_control_advanced_reaches_neo4j_twice(self, infra):
         await retriever_node(_state(search_mode="advanced"))
 
-        assert infra.neo4j_driver_requests == 3  # thêm graph_augmented_search
+        assert infra.neo4j_driver_requests == 2  # _graph_search + graph_augmented_search
+        assert len(infra.qdrant_payloads) == 1
 
     async def test_vector_qdrant_payload_carries_owner_scope_and_exclusion(self, infra):
         await retriever_node(_state(excluded_document_ids=["d9", "d8"]))
