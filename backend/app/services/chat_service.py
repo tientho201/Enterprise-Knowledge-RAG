@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Literal
@@ -10,8 +11,10 @@ from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import get_agent_graph, get_retrieval_graph
+from app.agents.history import to_history
 from app.agents.state import AgentState
 from app.analytics.tracker import tracker
+from app.core.config import settings
 from app.models.message import MessageRole
 from app.models.message_attachment import MessageAttachment
 from app.rag.response_cache import get_cached_answer, set_cached_answer
@@ -27,6 +30,8 @@ from app.schemas.chat import (
     MessageResponse,
 )
 from app.storage.s3_client import download_file_async, get_presigned_url_async
+
+logger = logging.getLogger(__name__)
 
 
 def _friendly_llm_error(
@@ -67,6 +72,63 @@ def _cache_document_scope(
     if not excluded_document_ids:
         return document_ids
     return [*(document_ids or []), *(f"!{doc_id}" for doc_id in excluded_document_ids)]
+
+
+def _build_initial_state(
+    *,
+    message: str,
+    search_tool: bool | None,
+    document_ids: list[str] | None,
+    owner_id: str | None,
+    excluded_document_ids: list[str],
+    top_k: int | None,
+    similarity_threshold: float | None,
+    system_prompt: str | None,
+    model: str | None,
+    api_key: str | None,
+    base_url: str | None,
+    image_data_urls: list[str],
+    search_mode: Literal["hybrid", "vector", "keyword", "advanced"] | None,
+    history: list[dict],
+) -> AgentState:
+    """State đầu vào của agent graph — nơi DUY NHẤT dựng nó, dùng chung cho chat()
+    (graph đầy đủ) và chat_stream() (graph retrieval) để hai luồng không lệch nhau.
+
+    Hàm thuần. `query` luôn là câu NGUYÊN VĂN người dùng gõ. `history` là các lượt
+    TRƯỚC câu hỏi hiện tại (xem `ChatService._load_history`); `[]` = không có lịch sử
+    → mọi node xử lý lượt này độc lập như trước khi có tính năng lịch sử.
+    """
+    return {
+        "query": message,
+        "intent": "",
+        "rewritten_query": None,
+        "dense_results": [],
+        "graph_results": [],
+        "merged_results": [],
+        "reranked_results": [],
+        "citations": [],
+        "final_answer": None,
+        "confidence_score": 0.0,
+        "retry_count": 0,
+        "search_tool": search_tool,
+        "document_ids": document_ids,
+        "owner_id": owner_id,
+        "excluded_document_ids": excluded_document_ids,
+        "top_k": top_k,
+        "similarity_threshold": similarity_threshold,
+        "system_prompt": system_prompt,
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "image_data_urls": image_data_urls,
+        "search_mode": search_mode,
+        "history": history,
+        "citation_graph_path": [],
+        "citation_graph_nodes": [],
+        "suggested_documents": [],
+        "dlp_flag": False,
+        "dlp_reason": None,
+    }
 
 
 # ── Marker trích dẫn trong Message.content ───────────────────────────────────
@@ -155,6 +217,51 @@ class ChatService:
             data_urls.append(f"data:{att.content_type};base64,{b64}")
         return data_urls, attachments
 
+    async def _load_history(
+        self, conversation_id: str | None, user_id: str, search_tool: bool | None
+    ) -> list[dict]:
+        """Các lượt TRƯỚC của hội thoại cho `AgentState.history` (cũ → mới); `[]` = không có.
+
+        PHẢI gọi TRƯỚC khi lưu tin nhắn user của lượt này: `add_message` flush trên cùng
+        session nên gọi sau thì chính câu hỏi hiện tại nằm trong kết quả (lặp trong
+        prompt, và contextualizer "viết lại" câu hỏi từ chính nó).
+
+        - Hội thoại mới (`conversation_id` rỗng) hoặc `CHAT_HISTORY_MAX_MESSAGES <= 0`
+          → `[]`, không chạm DB.
+        - Cô lập dữ liệu: repo ép chủ hội thoại ngay trong SQL (hội thoại của người khác
+          → `[]`); nơi gọi còn đã trả 404 từ `get_by_id` trước khi tới đây.
+        - Đưa NGUYÊN đối tượng `Message` vào `to_history` — không cắt/strip/nối gì vào
+          `content` trước đó: bóc marker trích dẫn (snippet tài liệu, kể cả tài liệu đã
+          tắt) chỉ kín với nội dung nguyên vẹn. Không đụng `citations`/`attachments` của
+          `Message` (lazy → MissingGreenlet).
+        - FAIL-SAFE (ngược với `list_inactive_ids`, vốn là bộ lọc bảo mật và fail-closed):
+          lịch sử là tính năng phụ, nạp lỗi → log WARNING (chỉ tên lớp lỗi, không nội dung)
+          và trả `[]` — lượt này chạy như lượt độc lập. SAVEPOINT để câu SQL lỗi không
+          làm hỏng transaction của request (Postgres huỷ cả transaction nếu không có).
+        """
+        limit = settings.CHAT_HISTORY_MAX_MESSAGES
+        if not conversation_id or limit <= 0:
+            return []
+        # TẠM THỜI: bật web search (search_tool) thì KHÔNG nạp lịch sử. Lý do:
+        # generator_node dùng `rewritten_query or query` làm truy vấn DuckDuckGo, mà
+        # contextualizer dựng `rewritten_query` từ lịch sử (câu trả lời cũ mang nội dung
+        # tài liệu nội bộ) → nội dung đó sẽ đi ra ngoài. Lịch sử rỗng → contextualizer
+        # không chạy. Gỡ điều kiện này SAU KHI generator.py chỉ còn dùng state["query"]
+        # (câu gốc) cho web search — quyết định của người dùng, làm ở run sau.
+        if search_tool:
+            return []
+        try:
+            async with self.db.begin_nested():
+                recent = await self.repo.list_recent_messages(conversation_id, user_id, limit)
+            # Cắt lại theo limit: generator không giới hạn số lượt, chỉ giới hạn ký tự.
+            return to_history(recent[-limit:])
+        except Exception as exc:  # noqa: BLE001 — fail-safe có chủ ý, xem docstring
+            logger.warning(
+                "Chat history load failed (%s) — continuing without history",
+                type(exc).__name__,
+            )
+            return []
+
     async def chat(
         self,
         user_id: str,
@@ -187,6 +294,9 @@ class ChatService:
         # Ảnh gửi kèm (vision) — tải trước khi lưu message để 404 sớm nếu id không hợp lệ
         image_data_urls, attachments = await self._load_images(image_ids, user_id)
 
+        # Lịch sử hội thoại — TRƯỚC khi lưu tin nhắn user (xem _load_history).
+        history = await self._load_history(conversation_id, user_id, search_tool)
+
         # Save user message, rồi gắn ảnh đã upload (message_id=NULL) vào message vừa tạo
         user_msg = await self.repo.add_message(conv.id, MessageRole.user, message)
         if attachments:
@@ -215,6 +325,9 @@ class ChatService:
         # truy hồi) được đọc/ghi cache. "vector" (dense-only), "keyword", "advanced"
         # đều bỏ qua cache cả hai chiều, nếu không các chế độ sẽ trả lẫn câu trả lời
         # của nhau. /chat/stream không dùng response cache nên không cần điều kiện này.
+        # Lịch sử hội thoại cũng KHÔNG nằm trong cache key: lượt có lịch sử ("còn điều 6
+        # thì sao?") phụ thuộc các lượt trước → bỏ qua cache cả hai chiều, nếu không câu
+        # trả lời của hội thoại này bị trả cho cùng câu chữ ở hội thoại khác.
         cache_eligible = (
             not search_tool
             and not image_data_urls
@@ -223,6 +336,7 @@ class ChatService:
             and not api_key
             and not base_url
             and search_mode in (None, "hybrid")
+            and not history
         )
         cached = (
             await get_cached_answer(message, owner_id, cache_document_ids)
@@ -248,36 +362,22 @@ class ChatService:
                 metrics.had_citations = bool(final_state["citations"])
                 metrics.metadata["cache_hit"] = True
         else:
-            initial_state: AgentState = {
-                "query": message,
-                "intent": "",
-                "rewritten_query": None,
-                "dense_results": [],
-                "graph_results": [],
-                "merged_results": [],
-                "reranked_results": [],
-                "citations": [],
-                "final_answer": None,
-                "confidence_score": 0.0,
-                "retry_count": 0,
-                "search_tool": search_tool,
-                "document_ids": document_ids,
-                "owner_id": owner_id,
-                "excluded_document_ids": excluded_document_ids,
-                "top_k": top_k,
-                "similarity_threshold": similarity_threshold,
-                "system_prompt": system_prompt,
-                "model": model,
-                "api_key": api_key,
-                "base_url": base_url,
-                "image_data_urls": image_data_urls,
-                "search_mode": search_mode,
-                "citation_graph_path": [],
-                "citation_graph_nodes": [],
-                "suggested_documents": [],
-                "dlp_flag": False,
-                "dlp_reason": None,
-            }
+            initial_state = _build_initial_state(
+                message=message,
+                search_tool=search_tool,
+                document_ids=document_ids,
+                owner_id=owner_id,
+                excluded_document_ids=excluded_document_ids,
+                top_k=top_k,
+                similarity_threshold=similarity_threshold,
+                system_prompt=system_prompt,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                image_data_urls=image_data_urls,
+                search_mode=search_mode,
+                history=history,
+            )
             # Observability (Task 3.1, xem app/analytics/tracker.py) — bọc toàn bộ
             # graph run, log QUERY_METRICS (latency/intent/confidence/chunks) sau
             # mỗi request. measure() tự bắt exception (kể cả HTTPException raise
@@ -447,6 +547,9 @@ class ChatService:
             image_data_urls, attachments = await self._load_images(image_ids, user_id)
             has_image = bool(image_data_urls)
 
+            # Lịch sử hội thoại — TRƯỚC khi lưu tin nhắn user, mirror chat().
+            history = await self._load_history(conversation_id, user_id, search_tool)
+
             user_msg = await self.repo.add_message(conv.id, MessageRole.user, message)
             if attachments:
                 await self.attachment_repo.attach_to_message(
@@ -459,36 +562,22 @@ class ChatService:
             # Loại tài liệu đang tắt — mirror chat(). FAIL-CLOSED: lỗi DB rơi vào except
             # bên dưới (phát event error), retrieval KHÔNG chạy.
             excluded_document_ids = await DocumentRepository(self.db).list_inactive_ids(owner_id)
-            initial_state: AgentState = {
-                "query": message,
-                "intent": "",
-                "rewritten_query": None,
-                "dense_results": [],
-                "graph_results": [],
-                "merged_results": [],
-                "reranked_results": [],
-                "citations": [],
-                "final_answer": None,
-                "confidence_score": 0.0,
-                "retry_count": 0,
-                "search_tool": search_tool,
-                "document_ids": document_ids,
-                "owner_id": owner_id,
-                "excluded_document_ids": excluded_document_ids,
-                "top_k": top_k,
-                "similarity_threshold": similarity_threshold,
-                "system_prompt": system_prompt,
-                "model": model,
-                "api_key": api_key,
-                "base_url": base_url,
-                "image_data_urls": image_data_urls,
-                "search_mode": search_mode,
-                "citation_graph_path": [],
-                "citation_graph_nodes": [],
-                "suggested_documents": [],
-                "dlp_flag": False,
-                "dlp_reason": None,
-            }
+            initial_state = _build_initial_state(
+                message=message,
+                search_tool=search_tool,
+                document_ids=document_ids,
+                owner_id=owner_id,
+                excluded_document_ids=excluded_document_ids,
+                top_k=top_k,
+                similarity_threshold=similarity_threshold,
+                system_prompt=system_prompt,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                image_data_urls=image_data_urls,
+                search_mode=search_mode,
+                history=history,
+            )
             # Observability (Task 3.1) — bọc retrieval+generation, mirror chat() không-stream.
             # async with quanh generator OK dù hàm này có yield bên trong (async generator
             # method) — measure() vẫn tự bắt exception + log latency khi thoát block.
@@ -496,8 +585,7 @@ class ChatService:
                 state = await get_retrieval_graph().ainvoke(initial_state)
 
                 from app.agents.dlp import check_bulk_extraction
-                from app.agents.generator import SYSTEM_PROMPT, _build_context
-                from app.agents.prompt_defense import wrap_untrusted
+                from app.agents.generator import _build_context, build_rag_messages
                 from app.llm.factory import get_llm_for_request
 
                 intent = state.get("intent", "rag")
@@ -512,21 +600,12 @@ class ChatService:
                 # content đa phương thức (text + image_url) thay vì lặp lại ở đây; tránh
                 # phải viết + bảo trì multimodal streaming riêng cho nhánh fast-path.
                 if intent == "rag" and context and not has_image:
-                    # Happy path: stream câu trả lời RAG token-by-token. Lớp 1 (SYSTEM_PROMPT,
-                    # bất biến) + Lớp 2 (system_prompt tùy biến, CỘNG THÊM) — mirror đúng
-                    # generator_node, xem app/agents/prompt_defense.py.
-                    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
-                    if system_prompt:
-                        messages.append({"role": "system", "content": system_prompt})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"{wrap_untrusted('context', context)}\n\n"
-                                f"{wrap_untrusted('user_query', message)}"
-                            ),
-                        }
-                    )
+                    # Happy path: stream câu trả lời RAG token-by-token. Messages dựng bằng
+                    # CHÍNH hàm generator_node dùng (Lớp 1 SYSTEM_PROMPT + lịch sử nếu có +
+                    # Lớp 2 system_prompt tùy biến, đọc từ state) → /chat và /chat/stream
+                    # không lệch nhau. Hàm đọc state["query"] (câu gốc), không đọc
+                    # rewritten_query. Không có lịch sử → messages y hệt trước đây.
+                    messages = build_rag_messages(state, context)
                     llm = get_llm_for_request(model=model, api_key=api_key, base_url=base_url)
                     buffer = ""
                     async for token in llm.stream_chat(messages=messages, temperature=0.1):
