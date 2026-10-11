@@ -13,11 +13,11 @@ Backend FastAPI cho hệ thống RAG doanh nghiệp nằm ở `backend/`. Tất 
 
 | Layer | Dùng gì | Lưu gì |
 |---|---|---|
-| Metadata | Supabase / PostgreSQL (asyncpg, port **6543** PgBouncer) | users, documents, chunks, conversations, messages, citations, audit_logs |
+| Metadata | Supabase / PostgreSQL (asyncpg, port **6543** PgBouncer) | users, documents, chunks, conversations, messages, citations, audit_logs, failed_tasks, message_attachments |
 | Raw files | AWS S3 (boto3; LocalStack ở dev qua `AWS_S3_ENDPOINT_URL`) | PDF/DOCX/TXT người dùng upload |
 | Vector | Qdrant Cloud | dense embeddings của chunks |
 | Graph | Neo4j (best-effort, graceful degradation) | NEXT_CHUNK / REFERENCES edges giữa chunks |
-| Broker/cache | Redis | Celery broker + result backend |
+| Broker/cache | Redis | Celery broker + result backend; token blacklist, OTP, rate limit, response cache |
 
 **Không dùng MinIO** — đã migrate sang S3. `backend/app/db/session.py` tự detect Supabase URL
 để bật `statement_cache_size=0` + `ssl=require` (logic này có unit test riêng, xem mục CI/CD).
@@ -42,6 +42,11 @@ Không viết DB query trong route hoặc service. Không viết business logic 
 
 - **Không bao giờ** gọi OpenAI client trực tiếp. Luôn dùng `get_llm()` từ
   `backend/app/llm/factory.py`.
+- BYOM (model tùy chỉnh từ panel Cấu hình): `get_llm_for_request(model, api_key, base_url)` cùng
+  file — có `api_key` thì dựng client OpenAI-compatible tạm cho request đó (không cache, không lưu
+  key), không có thì về `get_llm()`. Hiện chỉ `generator_node` và nhánh stream của
+  `chat_service.py` dùng. Nhánh `vllm` trong `get_llm()` đang bị comment (`LLM_PROVIDER=vllm` →
+  `ValueError`).
 - Embedding qua `get_embedder()` trong `backend/app/ingestion/embedder.py` — OpenAI
   `text-embedding-3-small` (1536 dims). **BGE-M3/local embedding đã bị loại bỏ hoàn toàn** —
   `torch`, `sentence-transformers`, `FlagEmbedding` đã bị xóa khỏi `backend/pyproject.toml`,
@@ -60,15 +65,16 @@ Không viết DB query trong route hoặc service. Không viết business logic 
   `run_in_executor`) — không gọi `S3Client` sync trực tiếp từ async context.
 - Trong Celery task: gọi sync client (`get_s3_client()`) trực tiếp — Celery worker là sync
   context, không cần wrap.
-- **Technical debt đã biết, chưa fix**: `OpenAIEmbedder.embed()` và
+- **Technical debt đã biết, chưa fix**: `OpenAIEmbedder.embed()` (client `openai.OpenAI` sync),
   `HybridRetriever._dense_search()` (dùng `httpx.Client` sync gọi REST API Qdrant thủ công thay
-  vì SDK) đang block event loop khi gọi từ async agent node. Cần migrate sang `AsyncOpenAI` và
-  `qdrant_client` async client khi có dịp.
+  vì SDK) và `_graph_search()` (Neo4j driver sync) vẫn là code sync. `retriever_node` đã bọc cả
+  ba qua `asyncio.to_thread` nên KHÔNG còn block event loop — gọi mới từ async context phải bọc
+  tương tự. Migrate sang `AsyncOpenAI` và `qdrant_client` async client khi có dịp.
 
 ## Celery task convention
 
-- Tasks ở `backend/app/workers/tasks/*`, luôn `bind=True` + `autoretry_for=(Exception,)` +
-  `retry_backoff=True`.
+- Tasks ở `backend/app/workers/tasks/*`, luôn `bind=True` + `retry_backoff=True`;
+  `ingest_document` có thêm `autoretry_for=(Exception,)` và time limit riêng (soft 300s / hard 360s).
 - Phải idempotent. Khi 2 task cần chạy tuần tự (vd: xóa vector trước khi re-ingest), dùng
   `celery.chain()` — **không** gọi `.delay()` rời rạc liên tiếp (đã từng có race condition ở
   `reindex_document`, đã fix bằng chain).
@@ -79,26 +85,56 @@ Không viết DB query trong route hoặc service. Không viết business logic 
 ## LangGraph agent pipeline
 
 State: `backend/app/agents/state.py` (`AgentState` TypedDict).
-Flow: `router → (retriever → grader → [rewrite loop, max 2] →) generator`
+Flow (`backend/app/agents/graph.py`):
+`guardrail → router → (contextualizer → retriever → grader → [rewriter ↺ retriever, max 2] →) generator`
 
+- `guardrail_node`: đứng đầu graph; gắn `intent="blocked"` thì đi thẳng tới generator (trả câu
+  cố định, không gọi LLM, không qua router).
 - `router_node`: phân loại intent `rag | chitchat | out_of_scope` bằng 1 LLM call.
-- `retriever_node`: `HybridRetriever` — dense (Qdrant) + graph expansion (Neo4j), merge theo
-  `DENSE_WEIGHT=0.7 / GRAPH_WEIGHT=0.3`.
-- `grader_node`: rerank rồi grade từng chunk. **Technical debt**: gọi LLM 1 lần/chunk (N calls)
-  — nên batch thành 1 call hoặc thay bằng cosine similarity threshold.
+- `contextualizer_node`: chỉ chạy 1 lần trên đường vào nhánh `rag` (vòng rewriter không qua lại).
+  Có `state["history"]` → 1 LLM call viết lại câu hỏi nối tiếp thành câu độc lập, ghi vào
+  `rewritten_query` (`query` gốc không bao giờ bị thay). Không có lịch sử / LLM lỗi / đầu ra không
+  hợp lệ → trả nguyên state.
+- `retriever_node`: mỗi lượt đúng 1 lời gọi Qdrant (`_dense_search`) + tối đa 1 lời gọi Neo4j
+  (`_graph_search`), trộn bằng `HybridRetriever.merge()` theo `DENSE_WEIGHT=0.7 /
+  GRAPH_WEIGHT=0.3` — KHÔNG gọi `retrieve()` (sẽ chạy lại cả hai). Neo4j lỗi → `_graph_search`
+  trả `{}` và log WARNING (rơi về dense-only, không còn im lặng).
+- `grader_node`: rerank (`HybridScoreReranker` — chỉ sort theo điểm hybrid rồi cắt top_k, không
+  gọi model) rồi chấm relevance CẢ LÔ chunk trong 1 lời gọi LLM duy nhất;
+  `confidence_score` = số chunk relevant / số chunk đã rerank.
 - `generator_node`: chỉ trả lời từ context đã retrieve, bắt buộc citation `[SOURCE: chunk_id]`.
   Nếu không tìm thấy và `search_tool=True` → fallback web search (DuckDuckGo scraping, fragile,
   cân nhắc thay Tavily API) kèm disclaimer rõ ràng là nguồn ngoài tài liệu nội bộ.
+
+Các tham số request ảnh hưởng pipeline (dựng state ở `chat_service.py::_build_initial_state`):
+
+- **`search_mode`** (`hybrid | vector | keyword | advanced`, `None` = hybrid): `vector` = dense-only
+  (không chạm Neo4j, điểm cosine thô); `keyword` hiện chạy Y HỆT hybrid (chưa có nhánh riêng);
+  `advanced` = hybrid + citation graph (`rag/citation_retriever.py`), gate theo gói ở route
+  (`core/plan_gate.py::require_advanced_search_access` — admin hoặc plan Pro còn hạn, sai → 403).
+- **Tài liệu tắt (`is_active=false`)**: `DocumentRepository.list_inactive_ids(owner_id)` →
+  `AgentState.excluded_document_ids` → loại ở Qdrant (`must_not`), Cypher, `merge()` và
+  `_drop_excluded` trong node. **Fail-closed**: DB lỗi thì request lỗi, không chạy retrieval
+  không lọc.
+- **Lịch sử hội thoại**: `ChatService._load_history` nạp tối đa `CHAT_HISTORY_MAX_MESSAGES` (mặc
+  định 6) tin nhắn gần nhất của chính hội thoại đó vào `AgentState.history` (qua
+  `agents/history.py::to_history`, đã bóc marker trích dẫn), TRƯỚC khi lưu tin nhắn user. Dùng ở
+  contextualizer và generator (khối `<history>` chỉ là ngữ cảnh, không phải nguồn trích dẫn).
+  Fail-safe: nạp lỗi → `[]`. **Không nạp khi `search_tool=True`** (xem bảng debt).
+- **Response cache** (`rag/response_cache.py`, chỉ `POST /chat`): chỉ đọc/ghi khi không web
+  search/ảnh/system prompt/BYOM, `search_mode` là `None`/`hybrid` và lượt đó không có lịch sử.
+- **Streaming**: `POST /chat/stream` (SSE: `meta`/`delta`/`done`/`error`) chạy
+  `get_retrieval_graph()` (dừng trước generator) rồi stream bằng `llm.stream_chat`; không dùng
+  response cache.
 
 ## Technical debt đã phát hiện (đọc trước khi đề xuất lại các vấn đề này — tránh lặp lại phân tích)
 
 | Vấn đề | File | Mức độ |
 |---|---|---|
-| Citations lưu bằng HTML comment `<!--citations:{json}-->` nhúng vào `message.content`, parse lại bằng regex | `backend/app/services/chat_service.py` | Fragile — bảng `citations` đã có nhưng dùng sai cách |
+| Citations vẫn lưu bằng marker `<!--citations:{json}-->` ở CUỐI `Message.content`; chỉ ghi/đọc qua `_encode_citations` / `_decode_citations` (marker giả trong câu trả lời bị vô hiệu hoá `<` → `&lt;`, chỉ nhận marker cuối có JSON hợp lệ) | `backend/app/services/chat_service.py` | Đã gia cố, nhưng `get_conversation` vẫn đọc từ marker thay vì bảng `citations` (bảng chỉ được ghi `chunk_id` + `message_id`) |
 | `_dense_search()` dùng `httpx.Client` build REST request thủ công thay vì `qdrant_client` SDK | `backend/app/rag/retriever.py` | Dư thừa, dễ lỗi khi Qdrant đổi API |
-| SSE streaming cho `/chat` chưa implement — block đến khi graph chạy xong | `backend/app/api/chat.py` | UX |
-| Conversation history không được nạp vào `AgentState` — mỗi câu hỏi xử lý độc lập | `backend/app/services/chat_service.py` | Thiếu multi-turn |
-| Connectors Confluence/Slack/Google Drive: model có enum nhưng code trống | `backend/app/connectors/` | Chưa implement |
+| Lịch sử hội thoại KHÔNG được nạp khi `search_tool=True` (tạm thời): web search dùng `rewritten_query or query`, mà `rewritten_query` có thể dựng từ lịch sử chứa nội dung tài liệu nội bộ | `backend/app/services/chat_service.py` (`_load_history`), `backend/app/agents/generator.py` | Mất multi-turn khi bật web search; gỡ sau khi generator chỉ dùng `query` gốc cho web search |
+| Connectors: Confluence có `load()` thật (REST, phân trang) nhưng `sync()` chỉ đếm số trang tải được, CHƯA nối vào ingestion; Slack: task `sync_slack` trả `not_implemented`, không có connector; Google Drive: không có file nào | `backend/app/connectors/confluence.py`, `backend/app/workers/tasks/sync.py` | Chưa dùng được để nạp tài liệu |
 | Reranker là stopgap (sort theo hybrid score, không phải model rerank thật) | `backend/app/rag/reranker.py` | Chất lượng rerank có thể chưa tối ưu |
 
 **Đã fix (production-readiness audit, xem `.claude/tasks/production-readiness-audit.md`):**
@@ -136,8 +172,8 @@ Flow: `router → (retriever → grader → [rewrite loop, max 2] →) generator
 - `.github/workflows/cd.yml`: build & push ghcr.io (`context: ./backend`) → `alembic upgrade
   head` với `secrets.DATABASE_URL` (production Supabase) → SSH deploy → health check. Cần
   GitHub Environment `production` với required reviewers.
-- `backend/docker-compose.yml` (dev): chỉ Redis + Neo4j (Postgres/S3/Qdrant đều cloud managed ở
-  production — CI thì local container, xem trên).
+- `backend/docker-compose.yml` (dev): chỉ Redis + Neo4j + LocalStack (S3 giả lập); Postgres/Qdrant
+  cloud managed, S3 thật ở production — CI thì local container, xem trên.
 - `backend/docker-compose.prod.yml`: thêm Celery worker + beat, image từ ghcr.io.
 
 ## File map nhanh — sửa gì thì mở file nào (path tính từ repo root)
@@ -154,7 +190,8 @@ Flow: `router → (retriever → grader → [rewrite loop, max 2] →) generator
 | Celery ingestion tasks | `backend/app/workers/tasks/ingestion.py` |
 | Retrieval (dense+graph) | `backend/app/rag/retriever.py` |
 | Rerank | `backend/app/rag/reranker.py` |
-| LangGraph nodes | `backend/app/agents/{router,retriever,grader,rewriter,generator}.py` |
+| LangGraph nodes | `backend/app/agents/{guardrail,router,contextualizer,retriever,grader,rewriter,generator}.py` |
+| Lịch sử hội thoại trong prompt | `backend/app/agents/history.py`, `ChatService._load_history` |
 | Chat/conversation | `backend/app/services/chat_service.py`, `backend/app/api/chat.py` |
 | Admin dashboard | `backend/app/api/admin.py` |
 | Audit log | `backend/app/repositories/audit_log_repo.py`, `backend/app/api/audit_logs.py` |
