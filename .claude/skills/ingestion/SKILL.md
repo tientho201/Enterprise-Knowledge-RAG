@@ -31,7 +31,7 @@ description: Dùng khi thiết kế, sửa, thêm bước, hoặc review ingesti
 "Semantic Chunking + Metadata" ở trên là 1 khối gộp — trong skill này tách thành 3 bước
 con tường minh hơn để dễ trỏ vào code (**Structure-aware Recursive Chunking** →
 **Semantic Refinement** → **Metadata Enrichment**), vì 3 việc này nằm ở 3 chỗ khác nhau
-trong code thật và có gap khác nhau. Danh sách đầy đủ 8 bước:
+trong code thật và có gap khác nhau. Danh sách đầy đủ 7 bước (mục 0–6 bên dưới):
 
 ```
 DOCUMENT
@@ -59,7 +59,13 @@ của nửa ONLINE (`rag-review`) — đổi schema payload/field ở đây ph�
 
 - Entry point: `POST /documents/upload` (`app/api/documents.py`) →
   `document_service.py` lưu S3 + tạo record `documents` (Postgres) → dispatch Celery task
-  → `run_ingestion_pipeline()` (`app/ingestion/pipeline.py`) chạy toàn bộ các bước dưới.
+  `ingest_document.delay(doc.id, object_name)` (`app/workers/tasks/ingestion.py`) — task này
+  chạy toàn bộ các bước dưới: tải file từ S3 → `extract_text` → chunk → embed → upsert Qdrant
+  (batch 100) → ghi bảng `chunks` → Neo4j (best-effort) → status `indexed`.
+  `app/ingestion/pipeline.py` CHỈ còn `extract_text()` + `ScannedPdfError`, không còn hàm
+  điều phối nào ở đó.
+- `chunk_id` tất định (`uuid5` từ `document_id:chunk_index`, `_make_chunk_id`) nên retry/reindex
+  hội tụ về cùng point Qdrant / node Neo4j / row Postgres (row `chunks` cũ bị xoá trước khi insert).
 - Upload không được block (ghi S3 + tạo DB record trong request, phần nặng chạy Celery).
 
 ## 1. Parse + Structure (+ OCR)
@@ -124,10 +130,11 @@ chunk thô (bước 2), mục tiêu là refine trước khi enrich metadata:
   chunk_size=800 — 25% nội dung lặp giữa 2 chunk liên tiếp).
 - Optional: LLM-based refinement (tóm tắt lại chunk quá dài về ngữ nghĩa, hoặc gắn 1 câu
   tóm tắt ngữ cảnh — "contextual retrieval" style) — cân nhắc kỹ vì tốn thêm 1 LLM
-  call/chunk, xem cảnh báo về chi phí LLM tương tự `grader_node` trong skill `rag-review`.
+  call/chunk lúc ingest; nếu làm, gộp nhiều chunk vào 1 lời gọi như cách `grader_node` chấm
+  cả lô trong 1 call (xem skill `rag-review`).
 
 Nếu thêm bước này, đặt file mới `app/ingestion/semantic_refiner.py`, gọi giữa
-`chunker.chunk()` và bước embed trong `pipeline.py` — nhận `list[TextChunk]`, trả về
+`chunker.chunk()` và bước embed trong `ingest_document` — nhận `list[TextChunk]`, trả về
 `list[TextChunk]` đã refine (giữ nguyên `chunk_index`/`char_start` hoặc tính lại nhất
 quán, vì `graph_indexer.py` và bảng `chunks` phụ thuộc `chunk_index` để dựng cạnh
 `NEXT_CHUNK`).
@@ -136,7 +143,7 @@ quán, vì `graph_indexer.py` và bảng `chunks` phụ thuộc `chunk_index` đ
 
 **Code thật — rải ở 3 nơi, chưa hợp nhất thành 1 bước rõ ràng:**
 
-- `pipeline.py`: mỗi chunk có `document_id`, `document_name`, `chunk_index`, `content`
+- `ingest_document` (`app/workers/tasks/ingestion.py`): mỗi chunk có `document_id`, `document_name`, `chunk_index`, `content`
   (payload Qdrant) + `owner_id` (data isolation, xem `enterprise-knowledge-rag` skill) +
   `token_count`, `embedding_model` (bảng `chunks`).
 - `structural_parser.py` + `citation_llm_fallback.py`: metadata pháp lý — Điều/Khoản/Điểm
@@ -169,20 +176,22 @@ thay đổi kiến trúc lớn — hỏi lại trước khi làm, không tự th
 lại vào `pyproject.toml` (đã bị dọn khỏi dependency để giảm ~2.5GB Docker image).
 
 **Sync/async boundary:** `OpenAIEmbedder.embed()` gọi `openai.OpenAI` client sync — biết
-là technical debt khi gọi từ async context (agent node), nhưng trong `pipeline.py` chạy
-qua Celery task (sync context) nên OK, không cần wrap.
+là technical debt; phía agent, `retriever_node` đã bọc `embed_query` qua `asyncio.to_thread`.
+Trong `ingest_document` nó chạy bên trong Celery task (event loop riêng của task qua
+`asyncio.run`, không phải loop của FastAPI) nên OK, không cần wrap.
 
 ## 6. Vector Index + BM25 Index → Vector/Search DB
 
 **2 index song song, không phải 1 — nhưng khác với diagram mục tiêu, index thứ 2 KHÔNG
 phải BM25:**
 
-- **Vector Index (Qdrant)** (`pipeline.py`): `PointStruct` — `id`, `vector` (dense
+- **Vector Index (Qdrant)** (`ingest_document`): `PointStruct` — `id`, `vector` (dense
   embedding), `payload` (metadata bước 4). Collection tự tạo nếu chưa có
-  (`VectorParams(size=embedder.dimension, distance=Distance.COSINE)`).
+  (`VectorParams(size=embedder.dimension, distance=Distance.COSINE)`), kèm payload index
+  KEYWORD cho `owner_id` và `document_id` (2 field retrieval dùng để filter).
 - **"BM25 Index" trong code thật là Neo4j graph, không phải BM25 thật**
   (`graph_indexer.py::index_chunks_to_graph`) — node `(:Chunk)` + cạnh
-  `NEXT_CHUNK`/`REFERENCES`, best-effort (try/except bọc ngoài trong `pipeline.py`, lỗi
+  `NEXT_CHUNK`/`REFERENCES`, best-effort (try/except bọc ngoài trong `ingest_document`, lỗi
   Neo4j KHÔNG làm fail toàn bộ ingest — xem log warning). Đây là quyết định kiến trúc đã
   chốt (xem gap ở mục 5) — nếu cần BM25 index thật đúng nghĩa diagram (vd Qdrant sparse
   vectors hoặc Elasticsearch/OpenSearch riêng), đây là component mới hoàn toàn, không phải
@@ -196,7 +205,7 @@ Qdrant, property node Neo4j, hay cả hai — thiếu ở Qdrant thì retrieval 
 
 ## Checklist khi sửa/thêm 1 bước
 
-- [ ] Xác định đang sửa bước nào trong 8 bước trên — không chunking rồi tự ý sửa luôn
+- [ ] Xác định đang sửa bước nào trong 7 bước trên — không chunking rồi tự ý sửa luôn
   metadata enrichment trong cùng hàm nếu không cần thiết (giữ ranh giới rõ giữa các bước
   để dễ test độc lập).
 - [ ] Không đổi `chunk_index` semantics nếu không rebuild lại `NEXT_CHUNK` edges trong
@@ -207,8 +216,9 @@ Qdrant, property node Neo4j, hay cả hai — thiếu ở Qdrant thì retrieval 
   overlap/dedup nội dung, kiểm tra lại `RERANK_TOP_K`/`DENSE_TOP_K` trong
   `app/core/config.py` vẫn hợp lý (số chunk giảm → có thể cần tăng top_k).
 - [ ] Viết/update test ở `backend/app/tests/unit/test_chunker.py` (xem skill `testing`)
-  khi đổi logic chunking hoặc thêm bước mới — pipeline test hiện tại (`test_ingestion.py`
-  integration) chỉ test end-to-end, không cô lập được từng bước.
+  khi đổi logic chunking hoặc thêm bước mới — `tests/unit/test_ingestion_pipeline_surface.py`
+  chỉ kiểm bề mặt module `pipeline.py`, không cô lập được từng bước của `ingest_document`
+  (file `tests/integration/test_ingestion.py` mà bản skill cũ nhắc tới không tồn tại).
 - [ ] Nếu phát hiện thêm gap mới không có trong skill này, cập nhật lại đúng mục tương
   ứng (0–6) — không tạo file mới liệt kê lại toàn bộ pipeline, tránh 2 nguồn chân lý lệch
   nhau.
