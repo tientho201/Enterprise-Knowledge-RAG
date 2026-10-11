@@ -2,7 +2,7 @@
   "_comment": "Profile production: than trong. Tier 2 rong, auto tat.",
   "auto_mode": {
     "enabled": true,
-    "max_tier": 2,
+    "max_tier": 1,
     "_comment": "Codebase dang chay that: khong tu chay tiep, moi task xong deu dung lai."
   },
   "limits": {
